@@ -3,7 +3,7 @@
 # This program is licensed under the Apache License 2.0.
 # See LICENSE or go to <https://opensource.org/licenses/Apache-2.0> for full license details.
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -50,8 +50,15 @@ class RecognitionPostProcessor(NestedObject):
     def __init__(
         self,
         vocab: str,
+        blacklist: Optional[List[str]] = None,
     ) -> None:
         self.vocab = vocab
+
+        # Check that the blacklist is valid: list of characters only 1 char long
+        if blacklist and not all(isinstance(c, str) and len(c) == 1 for c in blacklist):
+            raise ValueError("Blacklist must be a list of characters")
+
+        self.blacklist = blacklist
         self._embedding = list(self.vocab) + ["<eos>"]
 
     def extra_repr(self) -> str:

@@ -4,7 +4,9 @@
 # See LICENSE or go to <https://opensource.org/licenses/Apache-2.0> for full license details.
 
 from copy import deepcopy
+from hmac import new
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from cv2 import log
 
 import torch
 from torch import nn
@@ -161,6 +163,24 @@ class ViTSTRPostProcessor(_ViTSTRPostProcessor):
         self,
         logits: torch.Tensor,
     ) -> List[Tuple[str, float]]:
+        # Blacklist or whitelist characters
+        batch_size, max_seq_length, vocab_size = logits.size()
+        # Find indices of blacklisted characters
+
+        blacklist_indices = [self._embedding.index(char) for char in self.blacklist if char in self._embedding]
+        # create a mask for the blacklisted characters
+        #mask = torch.zeros_like(logits)
+        #mask[:, :, blacklist_indices] = float("-inf")
+
+        #logits = logits * mask
+
+
+        # Adjust logits for blacklisted characters
+        for i in range(batch_size):
+            for j in range(max_seq_length):
+                for idx in blacklist_indices:
+                    logits[i, j, idx] = float("-inf")
+
         # compute pred with argmax for attention models
         out_idxs = logits.argmax(-1)
         preds_prob = torch.softmax(logits, -1).max(dim=-1)[0]
