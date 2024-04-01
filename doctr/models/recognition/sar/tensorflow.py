@@ -45,6 +45,7 @@ class SAREncoder(layers.Layer, NestedObject):
             layers.LSTM(units=rnn_units, return_sequences=False, recurrent_dropout=dropout_prob),
         ])
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,
@@ -91,6 +92,7 @@ class AttentionModule(layers.Layer, NestedObject):
         )
         self.flatten = layers.Flatten()
 
+    @tf.function
     def call(
         self,
         features: tf.Tensor,
@@ -155,6 +157,7 @@ class SARDecoder(layers.Layer, NestedObject):
         self.output_dense = layers.Dense(self.vocab_size + 1, use_bias=True)
         self.dropout = layers.Dropout(dropout_prob)
 
+    @tf.function
     def call(
         self,
         features: tf.Tensor,
@@ -259,6 +262,16 @@ class SAR(Model, RecognitionModel):
 
         self.postprocessor = SARPostProcessor(vocab=vocab)
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "vocab": self.vocab,
+            "exportable": self.exportable,
+            "cfg": self.cfg,
+            "max_length": self.max_length,
+        })
+        return config
+
     @staticmethod
     def compute_loss(
         model_output: tf.Tensor,
@@ -293,6 +306,7 @@ class SAR(Model, RecognitionModel):
         ce_loss = tf.math.divide(tf.reduce_sum(masked_loss, axis=1), tf.cast(seq_len, model_output.dtype))
         return tf.expand_dims(ce_loss, axis=1)
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,

@@ -159,6 +159,15 @@ class LinkNet(_LinkNet, keras.Model):
             assume_straight_pages=assume_straight_pages, bin_thresh=bin_thresh, box_thresh=box_thresh
         )
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "class_names": self.class_names,
+            "exportable": self.exportable,
+            "assume_straight_pages": self.assume_straight_pages,
+        })
+        return config
+
     def compute_loss(
         self,
         out_map: tf.Tensor,
@@ -210,6 +219,7 @@ class LinkNet(_LinkNet, keras.Model):
 
         return focal_loss + dice_loss
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,

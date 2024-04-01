@@ -3,7 +3,7 @@
 # This program is licensed under the Apache License 2.0.
 # See LICENSE or go to <https://opensource.org/licenses/Apache-2.0> for full license details.
 
-from typing import Any, Tuple, Union
+from typing import Any, Dict, Tuple, Union
 
 import numpy as np
 import tensorflow as tf
@@ -82,6 +82,16 @@ class FASTConvLayer(layers.Layer, NestedObject):
 
         self.rbr_identity = layers.BatchNormalization() if out_channels == in_channels and stride == 1 else None
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "groups": self.groups,
+            "in_channels": self.in_channels,
+            "converted_ks": self.converted_ks,
+        })
+        return config
+
+    @tf.function
     def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         if hasattr(self, "fused_conv"):
             return self.activation(self.fused_conv(self.conv_pad(x, **kwargs), **kwargs))

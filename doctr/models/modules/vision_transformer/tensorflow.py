@@ -80,6 +80,7 @@ class PatchEmbedding(layers.Layer, NestedObject):
         patch_pos_embed = tf.reshape(tensor=patch_pos_embed, shape=(1, -1, dim))
         return tf.concat(values=(class_pos_embed, patch_pos_embed), axis=1)
 
+    @tf.function
     def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         B, H, W, C = x.shape
         assert H % self.patch_size[0] == 0, "Image height must be divisible by patch height"

@@ -157,6 +157,16 @@ class FAST(_FAST, keras.Model, NestedObject):
         # Pooling layer as erosion reversal as described in the paper
         self.pooling = layers.MaxPooling2D(pool_size=pooling_size // 2 + 1, strides=1, padding="same")
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "class_names": self.class_names,
+            "cfg": self.cfg,
+            "exportable": self.exportable,
+            "assume_straight_pages": self.assume_straight_pages,
+        })
+        return config
+
     def compute_loss(
         self,
         out_map: tf.Tensor,
@@ -220,6 +230,7 @@ class FAST(_FAST, keras.Model, NestedObject):
 
         return text_loss + kernel_loss
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,

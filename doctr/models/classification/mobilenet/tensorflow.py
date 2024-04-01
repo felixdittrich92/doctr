@@ -89,6 +89,7 @@ class SqueezeExcitation(Sequential):
             layers.Reshape((1, 1, chan)),
         ])
 
+    @tf.function
     def call(self, inputs: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         x = super().call(inputs, **kwargs)
         x = tf.math.multiply(inputs, x)
@@ -173,6 +174,15 @@ class InvertedResidual(layers.Layer):
 
         self.block = Sequential(_layers)
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "block": self.block,
+            "use_res_connect": self.use_res_connect,
+        })
+        return config
+
+    @tf.function
     def call(
         self,
         inputs: tf.Tensor,

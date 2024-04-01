@@ -83,6 +83,7 @@ def record_lr(
     return lr_recorder[: len(loss_recorder)], loss_recorder
 
 
+@tf.function
 def fit_one_epoch(model, train_loader, batch_transforms, optimizer, amp=False):
     # Iterate over the batches of the dataset
     pbar = tqdm(train_loader, position=1)
@@ -100,6 +101,7 @@ def fit_one_epoch(model, train_loader, batch_transforms, optimizer, amp=False):
         pbar.set_description(f"Training loss: {train_loss.numpy().mean():.6}")
 
 
+@tf.function
 def evaluate(model, val_loader, batch_transforms):
     # Validation loop
     val_loss, correct, samples, batch_cnt = 0, 0, 0, 0
@@ -297,7 +299,7 @@ def main(args):
         val_loss, acc = evaluate(model, val_loader, batch_transforms)
         if val_loss < min_loss:
             print(f"Validation loss decreased {min_loss:.6} --> {val_loss:.6}: saving state...")
-            model.save_weights(f"./{exp_name}/weights")
+            model.save_weights(f"./{exp_name}.weights.h5")
             min_loss = val_loss
         print(f"Epoch {epoch + 1}/{args.epochs} - Validation loss: {val_loss:.6} (Acc: {acc:.2%})")
         # W&B

@@ -50,6 +50,7 @@ class ClassifierHead(layers.Layer, NestedObject):
 
         self.head = layers.Dense(num_classes, kernel_initializer="he_normal", name="dense")
 
+    @tf.function
     def call(self, x: tf.Tensor) -> tf.Tensor:
         # (batch_size, num_classes) cls token
         return self.head(x[:, 0])
@@ -102,6 +103,13 @@ class VisionTransformer(Sequential):
 
         super().__init__(_layers)
         self.cfg = cfg
+
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "cfg": self.cfg,
+        })
+        return config
 
 
 def _vit(

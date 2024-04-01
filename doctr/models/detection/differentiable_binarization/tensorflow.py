@@ -88,6 +88,7 @@ class FeaturePyramidNetwork(layers.Layer, NestedObject):
     def extra_repr(self) -> str:
         return f"channels={self.channels}"
 
+    @tf.function
     def call(
         self,
         x: List[tf.Tensor],
@@ -166,6 +167,16 @@ class DBNet(_DBNet, keras.Model, NestedObject):
             assume_straight_pages=assume_straight_pages, bin_thresh=bin_thresh, box_thresh=box_thresh
         )
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "cfg": self.cfg,
+            "class_names": self.class_names,
+            "exportable": self.exportable,
+            "assume_straight_pages": self.assume_straight_pages,
+        })
+        return config
+
     def compute_loss(
         self,
         out_map: tf.Tensor,
@@ -238,6 +249,7 @@ class DBNet(_DBNet, keras.Model, NestedObject):
 
         return l1_loss + focal_scale * focal_loss + dice_loss
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,

@@ -4,7 +4,7 @@
 # See LICENSE or go to <https://opensource.org/licenses/Apache-2.0> for full license details.
 
 import math
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import tensorflow as tf
 from tensorflow.keras import layers
@@ -37,6 +37,15 @@ class PositionalEncoding(layers.Layer, NestedObject):
         pe[:, 1::2] = tf.math.cos(position * div_term)
         self.pe = tf.expand_dims(tf.convert_to_tensor(pe), axis=0)
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "dropout": self.dropout,
+            "pe": self.pe,
+        })
+        return config
+
+    @tf.function
     def call(
         self,
         x: tf.Tensor,
@@ -86,6 +95,14 @@ class PositionwiseFeedForward(layers.Layer, NestedObject):
         self.sec_linear = layers.Dense(d_model, kernel_initializer=tf.initializers.he_uniform())
         self.dropout = layers.Dropout(rate=dropout)
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "activation_fct": self.activation_fct,
+        })
+        return config
+
+    @tf.function
     def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         x = self.first_linear(x, **kwargs)
         x = self.activation_fct(x)
@@ -108,6 +125,15 @@ class MultiHeadAttention(layers.Layer, NestedObject):
         self.linear_layers = [layers.Dense(d_model, kernel_initializer=tf.initializers.he_uniform()) for _ in range(3)]
         self.output_linear = layers.Dense(d_model, kernel_initializer=tf.initializers.he_uniform())
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "d_k": self.d_k,
+            "num_heads": self.num_heads,
+        })
+        return config
+
+    @tf.function
     def call(
         self,
         query: tf.Tensor,
@@ -162,6 +188,14 @@ class EncoderBlock(layers.Layer, NestedObject):
             PositionwiseFeedForward(d_model, dff, dropout, activation_fct) for _ in range(self.num_layers)
         ]
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "num_layers": self.num_layers,
+        })
+        return config
+
+    @tf.function
     def call(self, x: tf.Tensor, mask: Optional[tf.Tensor] = None, **kwargs: Any) -> tf.Tensor:
         output = x
 
@@ -208,6 +242,15 @@ class Decoder(layers.Layer, NestedObject):
         self.source_attention = [MultiHeadAttention(num_heads, d_model, dropout) for _ in range(self.num_layers)]
         self.position_feed_forward = [PositionwiseFeedForward(d_model, dff, dropout) for _ in range(self.num_layers)]
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "num_layers": self.num_layers,
+            "d_model": self.d_model,
+        })
+        return config
+
+    @tf.function
     def call(
         self,
         tgt: tf.Tensor,

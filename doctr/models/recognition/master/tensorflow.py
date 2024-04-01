@@ -88,6 +88,17 @@ class MASTER(_MASTER, Model):
         self.linear = layers.Dense(self.vocab_size + 3, kernel_initializer=tf.initializers.he_uniform())
         self.postprocessor = MASTERPostProcessor(vocab=self.vocab)
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "d_model": self.d_model,
+            "vocab": self.vocab,
+            "max_length": self.max_length,
+            "exportable": self.exportable,
+            "cfg": self.cfg,
+        })
+        return config
+
     @tf.function
     def make_source_and_target_mask(self, source: tf.Tensor, target: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         # [1, 1, 1, ..., 0, 0, 0] -> 0 is masked
@@ -141,6 +152,7 @@ class MASTER(_MASTER, Model):
 
         return tf.expand_dims(ce_loss, axis=1)
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,

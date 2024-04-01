@@ -158,6 +158,18 @@ class CRNN(RecognitionModel, Model):
         self.beam_width = beam_width
         self.top_paths = top_paths
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "vocab": self.vocab,
+            "max_length": self.max_length,
+            "cfg": self.cfg,
+            "exportable": self.exportable,
+            "beam_width": self.beam_width,
+            "top_paths": self.top_paths,
+        })
+        return config
+
     def compute_loss(
         self,
         model_output: tf.Tensor,
@@ -182,6 +194,7 @@ class CRNN(RecognitionModel, Model):
         )
         return ctc_loss
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,

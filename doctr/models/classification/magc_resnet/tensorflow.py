@@ -73,6 +73,18 @@ class MAGC(layers.Layer):
             name="transform",
         )
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "inplanes": self.inplanes,
+            "headers": self.headers,
+            "attn_scale": self.attn_scale,
+            "planes": self.planes,
+            "single_header_inplanes": self.single_header_inplanes,
+        })
+        return config
+
+    @tf.function
     def context_modeling(self, inputs: tf.Tensor) -> tf.Tensor:
         b, h, w, c = (tf.shape(inputs)[i] for i in range(4))
 
@@ -110,6 +122,7 @@ class MAGC(layers.Layer):
         context.set_shape([batch, 1, 1, chan])
         return context
 
+    @tf.function
     def call(self, inputs: tf.Tensor, **kwargs) -> tf.Tensor:
         # Context modeling: B, H, W, C  ->  B, 1, 1, C
         context = self.context_modeling(inputs)

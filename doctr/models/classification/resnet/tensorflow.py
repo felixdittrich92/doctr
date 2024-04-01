@@ -98,6 +98,7 @@ class ResnetBlock(layers.Layer):
             *conv_sequence(output_channels, None, bn=True, kernel_size=kernel_size),
         ]
 
+    @tf.function
     def call(self, inputs: tf.Tensor) -> tf.Tensor:
         clone = self.shortcut(inputs)
         conv_out = self.conv_block(inputs)
@@ -183,6 +184,13 @@ class ResNet(Sequential):
 
         super().__init__(_layers)
         self.cfg = cfg
+
+    # def get_config(self) -> Dict[str, Any]:
+    #    config = super().get_config()
+    #    config.update({
+    #        "cfg": self.cfg,
+    #    })
+    #    return config
 
 
 def _resnet(

@@ -75,6 +75,16 @@ class ViTSTR(_ViTSTR, Model):
 
         self.postprocessor = ViTSTRPostProcessor(vocab=self.vocab)
 
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "vocab": self.vocab,
+            "exportable": self.exportable,
+            "cfg": self.cfg,
+            "max_length": self.max_length,
+        })
+        return config
+
     @staticmethod
     def compute_loss(
         model_output: tf.Tensor,
@@ -111,6 +121,7 @@ class ViTSTR(_ViTSTR, Model):
 
         return tf.expand_dims(ce_loss, axis=1)
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,

@@ -46,6 +46,7 @@ class CharEmbedding(layers.Layer):
         self.embedding = tf.keras.layers.Embedding(vocab_size, d_model)
         self.d_model = d_model
 
+    @tf.function
     def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         return math.sqrt(self.d_model) * self.embedding(x, **kwargs)
 
@@ -87,6 +88,7 @@ class PARSeqDecoder(layers.Layer):
         self.cross_attention_dropout = layers.Dropout(dropout)
         self.feed_forward_dropout = layers.Dropout(dropout)
 
+    @tf.function
     def call(
         self,
         target,
@@ -166,6 +168,17 @@ class PARSeq(_PARSeq, Model):
         self.dropout = layers.Dropout(dropout_prob)
 
         self.postprocessor = PARSeqPostProcessor(vocab=self.vocab)
+
+    def get_config(self) -> Dict[str, Any]:
+        config = super().get_config()
+        config.update({
+            "vocab": self.vocab,
+            "max_length": self.max_length,
+            "cfg": self.cfg,
+            "exportable": self.exportable,
+            "rng": self.rng,
+        })
+        return config
 
     @tf.function
     def generate_permutations(self, seqlen: tf.Tensor) -> tf.Tensor:
@@ -317,6 +330,7 @@ class PARSeq(_PARSeq, Model):
 
         return logits  # (N, max_length, vocab_size + 1)
 
+    @tf.function
     def call(
         self,
         x: tf.Tensor,
