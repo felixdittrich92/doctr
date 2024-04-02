@@ -91,7 +91,6 @@ class FASTConvLayer(layers.Layer, NestedObject):
         })
         return config
 
-    @tf.function
     def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         if hasattr(self, "fused_conv"):
             return self.activation(self.fused_conv(self.conv_pad(x, **kwargs), **kwargs))

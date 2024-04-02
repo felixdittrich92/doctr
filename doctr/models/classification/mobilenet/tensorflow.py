@@ -31,35 +31,35 @@ default_cfgs: Dict[str, Dict[str, Any]] = {
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 32, 3),
         "classes": list(VOCABS["french"]),
-        "url": "https://doctr-static.mindee.com/models?id=v0.4.1/mobilenet_v3_large-47d25d7e.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/mobilenet_v3_large-d857506e.weights.h5",
     },
     "mobilenet_v3_large_r": {
         "mean": (0.694, 0.695, 0.693),
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 32, 3),
         "classes": list(VOCABS["french"]),
-        "url": "https://doctr-static.mindee.com/models?id=v0.4.1/mobilenet_v3_large_r-a108e192.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/mobilenet_v3_large_r-eef2e3c6.weights.h5",
     },
     "mobilenet_v3_small": {
         "mean": (0.694, 0.695, 0.693),
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 32, 3),
         "classes": list(VOCABS["french"]),
-        "url": "https://doctr-static.mindee.com/models?id=v0.4.1/mobilenet_v3_small-8a32c32c.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/mobilenet_v3_small-3fcebad7.weights.h5",
     },
     "mobilenet_v3_small_r": {
         "mean": (0.694, 0.695, 0.693),
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 32, 3),
         "classes": list(VOCABS["french"]),
-        "url": "https://doctr-static.mindee.com/models?id=v0.4.1/mobilenet_v3_small_r-3d61452e.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/mobilenet_v3_small_r-dd50218d.weights.h5",
     },
     "mobilenet_v3_small_orientation": {
         "mean": (0.694, 0.695, 0.693),
         "std": (0.299, 0.296, 0.301),
         "input_shape": (128, 128, 3),
         "classes": [0, 90, 180, 270],
-        "url": "https://doctr-static.mindee.com/models?id=v0.4.1/classif_mobilenet_v3_small-1ea8db03.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/mobilenet_v3_small_orientation-ef019b6b.weights.h5",
     },
 }
 
@@ -89,7 +89,6 @@ class SqueezeExcitation(Sequential):
             layers.Reshape((1, 1, chan)),
         ])
 
-    @tf.function
     def call(self, inputs: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         x = super().call(inputs, **kwargs)
         x = tf.math.multiply(inputs, x)
@@ -175,14 +174,8 @@ class InvertedResidual(layers.Layer):
         self.block = Sequential(_layers)
 
     def get_config(self) -> Dict[str, Any]:
-        config = super().get_config()
-        config.update({
-            "block": self.block,
-            "use_res_connect": self.use_res_connect,
-        })
-        return config
+        return super().get_config()
 
-    @tf.function
     def call(
         self,
         inputs: tf.Tensor,

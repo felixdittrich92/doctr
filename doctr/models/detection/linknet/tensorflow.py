@@ -27,19 +27,19 @@ default_cfgs: Dict[str, Dict[str, Any]] = {
         "mean": (0.798, 0.785, 0.772),
         "std": (0.264, 0.2749, 0.287),
         "input_shape": (1024, 1024, 3),
-        "url": "https://doctr-static.mindee.com/models?id=v0.7.0/linknet_resnet18-b9ee56e6.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/linknet_resnet18-615a82c5.weights.h5",
     },
     "linknet_resnet34": {
         "mean": (0.798, 0.785, 0.772),
         "std": (0.264, 0.2749, 0.287),
         "input_shape": (1024, 1024, 3),
-        "url": "https://doctr-static.mindee.com/models?id=v0.7.0/linknet_resnet34-51909c56.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/linknet_resnet34-9d772be5.weights.h5",
     },
     "linknet_resnet50": {
         "mean": (0.798, 0.785, 0.772),
         "std": (0.264, 0.2749, 0.287),
         "input_shape": (1024, 1024, 3),
-        "url": "https://doctr-static.mindee.com/models?id=v0.7.0/linknet_resnet50-ac9f3829.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/linknet_resnet50-6bf6c8b5.weights.h5",
     },
 }
 
@@ -80,6 +80,7 @@ class LinkNetFPN(Model, NestedObject):
             for in_chan, out_chan, s, in_shape in zip(i_chans, o_chans, strides, in_shapes[::-1])
         ]
 
+    @tf.function
     def call(self, x: List[tf.Tensor]) -> tf.Tensor:
         out = 0
         for decoder, fmap in zip(self.decoders, x[::-1]):
@@ -219,7 +220,6 @@ class LinkNet(_LinkNet, keras.Model):
 
         return focal_loss + dice_loss
 
-    @tf.function
     def call(
         self,
         x: tf.Tensor,

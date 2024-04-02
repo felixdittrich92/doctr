@@ -66,6 +66,7 @@ class FastNeck(layers.Layer, NestedObject):
     def _upsample(self, x: tf.Tensor, y: tf.Tensor) -> tf.Tensor:
         return tf.image.resize(x, size=y.shape[1:3], method="bilinear")
 
+    @tf.function
     def call(self, x: tf.Tensor, **kwargs: Any) -> tf.Tensor:
         f1, f2, f3, f4 = x
         f1, f2, f3, f4 = [reduction(f, **kwargs) for reduction, f in zip(self.reduction, (f1, f2, f3, f4))]
@@ -230,7 +231,6 @@ class FAST(_FAST, keras.Model, NestedObject):
 
         return text_loss + kernel_loss
 
-    @tf.function
     def call(
         self,
         x: tf.Tensor,

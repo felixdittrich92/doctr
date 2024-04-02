@@ -24,7 +24,7 @@ default_cfgs: Dict[str, Dict[str, Any]] = {
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 128, 3),
         "vocab": VOCABS["french"],
-        "url": "https://doctr-static.mindee.com/models?id=v0.6.0/sar_resnet31-c41e32a5.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/sar_resnet31-5a58806c.weights.h5",
     },
 }
 
@@ -306,7 +306,6 @@ class SAR(Model, RecognitionModel):
         ce_loss = tf.math.divide(tf.reduce_sum(masked_loss, axis=1), tf.cast(seq_len, model_output.dtype))
         return tf.expand_dims(ce_loss, axis=1)
 
-    @tf.function
     def call(
         self,
         x: tf.Tensor,

@@ -32,6 +32,7 @@ from doctr.utils.metrics import LocalizationConfusion
 from utils import EarlyStopper, load_backbone, plot_recorder, plot_samples
 
 
+@tf.function
 def record_lr(
     model: tf.keras.Model,
     train_loader: DataLoader,
@@ -84,6 +85,7 @@ def record_lr(
     return lr_recorder[: len(loss_recorder)], loss_recorder
 
 
+@tf.function
 def fit_one_epoch(model, train_loader, batch_transforms, optimizer, amp=False):
     train_iter = iter(train_loader)
     # Iterate over the batches of the dataset
@@ -101,6 +103,7 @@ def fit_one_epoch(model, train_loader, batch_transforms, optimizer, amp=False):
         pbar.set_description(f"Training loss: {train_loss.numpy():.6}")
 
 
+@tf.function
 def evaluate(model, val_loader, batch_transforms, val_metric):
     # Reset val metric
     val_metric.reset()
@@ -343,11 +346,11 @@ def main(args):
         val_loss, recall, precision, mean_iou = evaluate(model, val_loader, batch_transforms, val_metric)
         if val_loss < min_loss:
             print(f"Validation loss decreased {min_loss:.6} --> {val_loss:.6}: saving state...")
-            model.save_weights(f"./{exp_name}/weights")
+            model.save_weights(f"./{exp_name}.weights.h5")
             min_loss = val_loss
         if args.save_interval_epoch:
             print(f"Saving state at epoch: {epoch + 1}")
-            model.save_weights(f"./{exp_name}_{epoch + 1}/weights")
+            model.save_weights(f"./{exp_name}_{epoch + 1}.weights.h5")
         log_msg = f"Epoch {epoch + 1}/{args.epochs} - Validation loss: {val_loss:.6} "
         if any(val is None for val in (recall, precision, mean_iou)):
             log_msg += "(Undefined metric value, caused by empty GTs or predictions)"

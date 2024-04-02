@@ -30,6 +30,7 @@ from doctr.models.utils import export_model_to_onnx
 from utils import EarlyStopper, plot_recorder, plot_samples
 
 
+@tf.function
 def record_lr(
     model: tf.keras.Model,
     train_loader: DataLoader,

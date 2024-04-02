@@ -26,6 +26,7 @@ from doctr.models import recognition
 from doctr.utils.metrics import TextMatch
 
 
+@tf.function
 def evaluate(model, val_loader, batch_transforms, val_metric):
     # Reset val metric
     val_metric.reset()

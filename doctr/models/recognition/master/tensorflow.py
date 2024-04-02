@@ -25,7 +25,7 @@ default_cfgs: Dict[str, Dict[str, Any]] = {
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 128, 3),
         "vocab": VOCABS["french"],
-        "url": "https://doctr-static.mindee.com/models?id=v0.6.0/master-a8232e9f.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/master-d7fdaeff.weights.h5",
     },
 }
 
@@ -152,7 +152,6 @@ class MASTER(_MASTER, Model):
 
         return tf.expand_dims(ce_loss, axis=1)
 
-    @tf.function
     def call(
         self,
         x: tf.Tensor,

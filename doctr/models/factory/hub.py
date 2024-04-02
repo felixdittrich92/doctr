@@ -20,7 +20,6 @@ from huggingface_hub import (
     get_token_permission,
     hf_hub_download,
     login,
-    snapshot_download,
 )
 
 from doctr import models
@@ -75,7 +74,7 @@ def _save_model_and_config_for_hf_hub(model: Any, save_dir: str, arch: str, task
         weights_path = save_directory / "pytorch_model.bin"
         torch.save(model.state_dict(), weights_path)
     elif is_tf_available():
-        weights_path = save_directory / "tf_model" / "weights"
+        weights_path = save_directory / "tf_model.weights.h5"
         model.save_weights(str(weights_path))
 
     config_path = save_directory / "config.json"
@@ -234,7 +233,6 @@ def from_hub(repo_id: str, **kwargs: Any):
         state_dict = torch.load(hf_hub_download(repo_id, filename="pytorch_model.bin", **kwargs), map_location="cpu")
         model.load_state_dict(state_dict)
     else:  # tf
-        repo_path = snapshot_download(repo_id, **kwargs)
-        model.load_weights(os.path.join(repo_path, "tf_model", "weights"))
+        model.load_weights(hf_hub_download(repo_id, filename="tf_model.weights.h5", **kwargs))
 
     return model
