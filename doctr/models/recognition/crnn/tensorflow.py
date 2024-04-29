@@ -24,21 +24,21 @@ default_cfgs: Dict[str, Dict[str, Any]] = {
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 128, 3),
         "vocab": VOCABS["legacy_french"],
-        "url": "https://doctr-static.mindee.com/models?id=v0.3.0/crnn_vgg16_bn-76b7f2c6.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/crnn_vgg16_bn-74408ba5.h5",
     },
     "crnn_mobilenet_v3_small": {
         "mean": (0.694, 0.695, 0.693),
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 128, 3),
         "vocab": VOCABS["french"],
-        "url": "https://doctr-static.mindee.com/models?id=v0.3.1/crnn_mobilenet_v3_small-7f36edec.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/crnn_mobilenet_v3_small-5b4a0330.h5",
     },
     "crnn_mobilenet_v3_large": {
         "mean": (0.694, 0.695, 0.693),
         "std": (0.299, 0.296, 0.301),
         "input_shape": (32, 128, 3),
         "vocab": VOCABS["french"],
-        "url": "https://doctr-static.mindee.com/models?id=v0.6.0/crnn_mobilenet_v3_large-cccc50b1.zip&src=0",
+        "url": "https://github.com/mindee/doctr/releases/download/v0.8.1/crnn_mobilenet_v3_large-de27c5ff.h5",
     },
 }
 
