@@ -4,9 +4,7 @@
 # See LICENSE or go to <https://opensource.org/licenses/Apache-2.0> for full license details.
 
 from copy import deepcopy
-from hmac import new
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from cv2 import log
 
 import torch
 from torch import nn
@@ -163,39 +161,45 @@ class ViTSTRPostProcessor(_ViTSTRPostProcessor):
         self,
         logits: torch.Tensor,
     ) -> List[Tuple[str, float]]:
-        # Blacklist or whitelist characters
-        batch_size, max_seq_length, vocab_size = logits.size()
-        # Find indices of blacklisted characters
+        # Softmax probabilities for each character in the vocab
+        probs = torch.softmax(logits, -1)
 
-        blacklist_indices = [self._embedding.index(char) for char in self.blacklist if char in self._embedding]
-        # create a mask for the blacklisted characters
-        #mask = torch.zeros_like(logits)
-        #mask[:, :, blacklist_indices] = float("-inf")
+        word_values, word_probs = [], []
 
-        #logits = logits * mask
+        for seq_probs in probs.cpu().numpy():
+            word = []
+            seq_prob = []
 
+            # First, find the EOS position (ignoring blacklist and <eos>)
+            eos_position = len(seq_probs)
+            for i, char_probs in enumerate(seq_probs):
+                top_idx = char_probs.argmax()
+                if self._embedding[top_idx] == "<eos>":
+                    eos_position = i
+                    break
 
-        # Adjust logits for blacklisted characters
-        for i in range(batch_size):
-            for j in range(max_seq_length):
-                for idx in blacklist_indices:
-                    logits[i, j, idx] = float("-inf")
+            # Decode up to eos_position with blacklist logic
+            for i, char_probs in enumerate(seq_probs[:eos_position]):
+                # Sort characters by probability (highest first)
+                sorted_indices = char_probs.argsort()[::-1]
 
-        # compute pred with argmax for attention models
-        out_idxs = logits.argmax(-1)
-        preds_prob = torch.softmax(logits, -1).max(dim=-1)[0]
+                # Find the highest probability character that isn't blacklisted or <eos>
+                for idx in sorted_indices:
+                    char = self._embedding[idx]
+                    if char not in self.blacklist and char not in ["<eos>", "<sos>", "<pad>"]:
+                        word.append(char)
+                        seq_prob.append(char_probs[idx])
+                        break
+                else:
+                    # If all options are blacklisted, add a low probability placeholder
+                    word.append("")
+                    seq_prob.append(0.0)
 
-        # Manual decoding
-        word_values = [
-            "".join(self._embedding[idx] for idx in encoded_seq).split("<eos>")[0]
-            for encoded_seq in out_idxs.cpu().numpy()
-        ]
-        # compute probabilties for each word up to the EOS token
-        probs = [
-            preds_prob[i, : len(word)].clip(0, 1).mean().item() if word else 0.0 for i, word in enumerate(word_values)
-        ]
+            # Join characters and compute the word's average probability
+            word_values.append("".join(word))
+            word_probs.append(float(sum(seq_prob) / len(seq_prob) if word else 0.0))
 
-        return list(zip(word_values, probs))
+        return list(zip(word_values, word_probs))
 
 
 def _vitstr(
