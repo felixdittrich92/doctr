@@ -5,10 +5,6 @@
 
 import os
 
-from doctr.file_utils import ensure_keras_v2
-
-ensure_keras_v2()
-
 os.environ["USE_TF"] = "1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
@@ -18,7 +14,7 @@ import time
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import Model, mixed_precision, optimizers
+from keras import Model, mixed_precision, optimizers
 from tqdm.auto import tqdm
 
 from doctr.models import login_to_hub, push_to_hf_hub

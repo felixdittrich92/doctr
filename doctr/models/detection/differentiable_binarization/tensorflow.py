@@ -245,6 +245,10 @@ class DBNet(_DBNet, Model, NestedObject):
         return_preds: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        # if target values are tf.Tensor, convert them to numpy arrays
+        if target is not None:
+            target = [{k: v.numpy() if isinstance(v, tf.Tensor) else v for k, v in t.items()} for t in target]
+
         feat_maps = self.feat_extractor(x, **kwargs)
         feat_concat = self.fpn(feat_maps, **kwargs)
         logits = self.probability_head(feat_concat, **kwargs)

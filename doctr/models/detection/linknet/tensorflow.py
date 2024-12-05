@@ -220,6 +220,10 @@ class LinkNet(_LinkNet, Model):
         return_preds: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        # if target values are tf.Tensor, convert them to numpy arrays
+        if target is not None:
+            target = [{k: v.numpy() if isinstance(v, tf.Tensor) else v for k, v in t.items()} for t in target]
+
         feat_maps = self.feat_extractor(x, **kwargs)
         logits = self.fpn(feat_maps, **kwargs)
         logits = self.classifier(logits, **kwargs)
