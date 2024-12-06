@@ -24,6 +24,9 @@ VOCABS: dict[str, str] = {
     "hindi_punctuation": "।,?!:्ॐ॰॥",
     "bangla_letters": "অআইঈউঊঋএঐওঔকখগঘঙচছজঝঞটঠডঢণতথদধনপফবভমযরলশষসহ়ঽািীুূৃেৈোৌ্ৎংঃঁ",
     "bangla_digits": "০১২৩৪৫৬৭৮৯",
+    "gujarati_letters": "તગખઢરજયશઆઐઊૂેપફુ્ઓૈાથીડૃદઠવનલષકિઅભઘઉઔઝઙઇઞઈધૌછટચબોમએણઋ",
+    "gujarati_digits": "૦૧૨૩૪૫૬૭૮૯",
+    "gujarati_punctuation": "૰ઽ◌ંઃ॥ૐ઼ ઁ" + "૱",
     "generic_cyrillic_letters": "абвгдежзийклмнопрстуфхцчшщьюяАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЬЮЯ",
 }
 
@@ -61,6 +64,9 @@ VOCABS["hindi"] = VOCABS["hindi_letters"] + VOCABS["hindi_digits"] + VOCABS["hin
 VOCABS["bangla"] = VOCABS["bangla_letters"] + VOCABS["bangla_digits"]
 VOCABS["ukrainian"] = (
     VOCABS["generic_cyrillic_letters"] + VOCABS["digits"] + VOCABS["punctuation"] + VOCABS["currency"] + "ґіїєҐІЇЄ₴"
+)
+VOCABS["gujarati"] = (
+    VOCABS["gujarati_letters"] + VOCABS["gujarati_digits"] + VOCABS["punctuation"] + VOCABS["gujarati_punctuation"]
 )
 VOCABS["multilingual"] = "".join(
     dict.fromkeys(
