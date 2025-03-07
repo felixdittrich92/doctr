@@ -737,7 +737,7 @@ def test_wildreceipt_dataset(input_size, num_samples, rotate, recognition, detec
 @pytest.mark.parametrize(
     "input_size, num_samples, recognition, detection",
     [
-        [[512, 512], 3, False, False],  # Actual set has 1268 training samples and 472 test samples
+        [[512, 512], 3, False, False],  # Actual set has 1268 training samples and 3261 test samples
         [[32, 128], 3, True, False],  # recognition
         [[512, 512], 3, False, True],  # detection
     ],
