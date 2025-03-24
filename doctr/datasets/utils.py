@@ -200,7 +200,7 @@ def crop_bboxes_from_image(img_path: str | Path, geoms: np.ndarray) -> list[np.n
         a list of cropped images
     """
     with Image.open(img_path) as pil_img:
-        img: np.ndarray = np.array(pil_img.convert("RGB"))
+        img: np.ndarray = np.asarray(pil_img.convert("RGB"))
     # Polygon
     if geoms.ndim == 3 and geoms.shape[1:] == (4, 2):
         return extract_rcrops(img, geoms.astype(dtype=int))

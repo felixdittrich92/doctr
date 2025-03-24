@@ -41,6 +41,12 @@ class SynthText(VisionDataset):
     URL = "https://thor.robots.ox.ac.uk/~vgg/data/scenetext/SynthText.zip"
     SHA256 = "28ab030485ec8df3ed612c568dd71fb2793b9afbfa3a9d9c6e792aef33265bf1"
 
+    # filter corrupted or missing images
+    BLACKLIST = (
+        "67/fruits_129_",
+        "194/window_19_",
+    )
+
     def __init__(
         self,
         train: bool = True,
@@ -95,6 +101,10 @@ class SynthText(VisionDataset):
             # File existence check
             if not os.path.exists(os.path.join(tmp_root, img_path[0])):
                 raise FileNotFoundError(f"unable to locate {os.path.join(tmp_root, img_path[0])}")
+
+            # Skip corrupted images
+            if img_path[0].startswith(self.BLACKLIST):
+                continue
 
             labels = [elt for word in txt.tolist() for elt in word.split()]
             # (x, y) coordinates of top left, top right, bottom right, bottom left corners
