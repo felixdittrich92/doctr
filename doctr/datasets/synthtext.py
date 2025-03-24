@@ -124,7 +124,6 @@ class SynthText(VisionDataset):
                             tmp_img = Image.fromarray(crop)
                             tmp_img.save(os.path.join(reco_folder_path, f"{reco_images_counter}.png"))
                             reco_images_counter += 1
-                self._read_from_folder(reco_folder_path)
             elif detection_task:
                 self.data.append((img_path[0], np.asarray(word_boxes, dtype=np_dtype)))
             else:
