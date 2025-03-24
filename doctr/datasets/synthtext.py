@@ -110,9 +110,7 @@ class SynthText(VisionDataset):
 
             if recognition_task:
                 crops = crop_bboxes_from_image(img_path=os.path.join(tmp_root, img_path[0]), geoms=word_boxes)
-                for crop, label in tqdm(
-                    iterable=zip(crops, labels), desc="Preparing SynthText crops", total=len(crops)
-                ):
+                for crop, label in zip(crops, labels):
                     if (
                         crop.shape[0] > 0
                         and crop.shape[1] > 0

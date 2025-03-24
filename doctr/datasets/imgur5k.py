@@ -132,9 +132,7 @@ class IMGUR5K(AbstractDataset):
                     crops = crop_bboxes_from_image(
                         img_path=os.path.join(self.root, img_name), geoms=np.asarray(box_targets, dtype=np_dtype)
                     )
-                    for crop, label in tqdm(
-                        iterable=zip(crops, labels), desc="Preparing IMGUR5K crops", total=len(crops)
-                    ):
+                    for crop, label in zip(crops, labels):
                         if (
                             crop.shape[0] > 0
                             and crop.shape[1] > 0
