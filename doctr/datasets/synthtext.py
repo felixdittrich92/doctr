@@ -142,5 +142,4 @@ class SynthText(VisionDataset):
         img_paths = glob.glob(os.path.join(path, "*.png"))
         for img_path in tqdm(iterable=img_paths, desc="Preparing and Loading SynthText", total=len(img_paths)):
             with open(os.path.join(path, f"{os.path.basename(img_path)[:-4]}.txt"), "r") as f:
-                if len(f.read()) > 0 and len(f.read()) < 30:
-                    self.data.append((img_path, f.read()))
+                self.data.append((img_path, f.read()))
