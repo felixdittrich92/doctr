@@ -389,7 +389,7 @@ def test_ic13_dataset(input_size, num_samples, rotate, recognition, detection, m
     "input_size, num_samples, recognition, detection",
     [
         [[512, 512], 3, False, False],  # Actual set has 7149 train and 796 test samples
-        [[32, 128], 5, True, False],  # recognition
+        [[32, 128], 11, True, False],  # recognition
         [[512, 512], 3, False, True],  # detection
     ],
 )
@@ -555,7 +555,7 @@ def test_cord(input_size, num_samples, rotate, recognition, detection, mock_cord
     "input_size, num_samples, recognition, detection",
     [
         [[512, 512], 2, False, False],  # Actual set has 772875 training samples and 85875 test samples
-        [[32, 128], 10, True, False],  # recognition
+        [[32, 128], 25, True, False],  # recognition
         [[512, 512], 2, False, True],  # detection
     ],
 )

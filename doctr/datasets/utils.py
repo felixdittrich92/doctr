@@ -81,11 +81,12 @@ def encode_string(
     """
     try:
         return list(map(vocab.index, input_string))
-    except ValueError:
+    except ValueError as e:
+        missing_chars = [char for char in input_string if char not in vocab]
         raise ValueError(
-            f"some characters cannot be found in 'vocab'. \
-                         Please check the input string {input_string} and the vocabulary {vocab}"
-        )
+            f"Some characters cannot be found in 'vocab': {set(missing_chars)}.\n"
+            f"Please check the input string `{input_string}` and the vocabulary `{vocab}`"
+        ) from e
 
 
 def decode_sequence(
