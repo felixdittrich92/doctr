@@ -13,7 +13,6 @@ import logging
 import multiprocessing
 import time
 from pathlib import Path
-from copy import deepcopy
 
 import numpy as np
 import torch
@@ -31,10 +30,10 @@ if os.getenv("TQDM_SLACK_TOKEN") and os.getenv("TQDM_SLACK_CHANNEL"):
 else:
     from tqdm.auto import tqdm
 
-from doctr import transforms as T
 from doctr import datasets
-from doctr.datasets.utils import pre_transform_multiclass
+from doctr import transforms as T
 from doctr.datasets import DetectionDataset
+from doctr.datasets.utils import pre_transform_multiclass
 from doctr.models import detection, login_to_hub, push_to_hf_hub
 from doctr.utils.metrics import LocalizationConfusion
 from utils import EarlyStopper, plot_recorder, plot_samples
@@ -267,7 +266,9 @@ def main(args):
                         [
                             T.Resize(args.input_size, preserve_aspect_ratio=True),  # This does not pad
                             T.RandomApply(T.RandomRotate(90, expand=True), 0.5),
-                            T.Resize((args.input_size, args.input_size), preserve_aspect_ratio=True, symmetric_pad=True),
+                            T.Resize(
+                                (args.input_size, args.input_size), preserve_aspect_ratio=True, symmetric_pad=True
+                            ),
                         ]
                         if args.rotation and not args.eval_straight
                         else []
@@ -288,16 +289,14 @@ def main(args):
                 download=True,
                 detection_task=True,
                 sample_transforms=T.SampleCompose(
-                    (
-                        [_transform]
-                        if not args.rotation or args.eval_straight
-                        else []
-                    )
+                    ([_transform] if not args.rotation or args.eval_straight else [])
                     + (
                         [
                             T.Resize(args.input_size, preserve_aspect_ratio=True),  # This does not pad
                             T.RandomApply(T.RandomRotate(90, expand=True), 0.5),
-                            T.Resize((args.input_size, args.input_size), preserve_aspect_ratio=True, symmetric_pad=True),
+                            T.Resize(
+                                (args.input_size, args.input_size), preserve_aspect_ratio=True, symmetric_pad=True
+                            ),
                         ]
                         if args.rotation and not args.eval_straight
                         else []
@@ -315,7 +314,9 @@ def main(args):
                         detection_task=True,
                         use_polygons=args.rotation and not args.eval_straight,
                     )
-                    val_set.data.extend((str(Path(_ds.root).joinpath(img_path)), target) for img_path, target in _ds.data)
+                    val_set.data.extend(
+                        (str(Path(_ds.root).joinpath(img_path)), target) for img_path, target in _ds.data
+                    )
             val_set.class_names = ["words" for _ in range(len(val_set.data))]  # Dummy class names
             val_set.pre_transforms = pre_transform_multiclass
 
@@ -420,7 +421,7 @@ def main(args):
             img_transforms=img_transforms,
             sample_transforms=sample_transforms,
             use_polygons=args.rotation,
-            )
+        )
 
         with open(os.path.join(args.train_path, "labels.json"), "rb") as f:
             train_hash = hashlib.sha256(f.read()).hexdigest()
@@ -436,21 +437,17 @@ def main(args):
             use_polygons=args.rotation,
             img_transforms=img_transforms,
             sample_transforms=T.SampleCompose(
-                    (
-                        [_transform]
-                        if not args.rotation or args.eval_straight
-                        else []
-                    )
-                    + (
-                        [
-                            T.Resize(args.input_size, preserve_aspect_ratio=True),  # This does not pad
-                            T.RandomApply(T.RandomRotate(90, expand=True), 0.5),
-                            T.Resize((args.input_size, args.input_size), preserve_aspect_ratio=True, symmetric_pad=True),
-                        ]
-                        if args.rotation and not args.eval_straight
-                        else []
-                    )
-                ),
+                ([_transform] if not args.rotation or args.eval_straight else [])
+                + (
+                    [
+                        T.Resize(args.input_size, preserve_aspect_ratio=True),  # This does not pad
+                        T.RandomApply(T.RandomRotate(90, expand=True), 0.5),
+                        T.Resize((args.input_size, args.input_size), preserve_aspect_ratio=True, symmetric_pad=True),
+                    ]
+                    if args.rotation and not args.eval_straight
+                    else []
+                )
+            ),
         )
         train_set.data = [(str(Path(train_set.root).joinpath(img_path)), label) for img_path, label in train_set.data]
         train_set.root = Path("/")
