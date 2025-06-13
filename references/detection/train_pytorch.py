@@ -361,6 +361,7 @@ def main(args):
 
     if rank == 0 and args.test_only:
         pbar.write("Running evaluation")
+        model.to(device)
         val_loss, recall, precision, mean_iou = evaluate(
             model, val_loader, batch_transforms, val_metric, args, amp=args.amp
         )
@@ -463,6 +464,8 @@ def main(args):
         train_set.class_names = ["words" for _ in range(len(train_set.data))]  # Dummy class names
         train_set.pre_transforms = pre_transform_multiclass
         # TODO: Check why the hell this takes so much vram - anything is going totally wrong :D
+
+        # TODO: would it be better to load all the data into a temp dir and create a "temporary" dataset like loading from local disk?  # noqa: E501
 
     if distributed:
         sampler = DistributedSampler(train_set, rank=rank, shuffle=False, drop_last=True)
