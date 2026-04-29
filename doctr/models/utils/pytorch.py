@@ -86,8 +86,9 @@ def load_pretrained_params(
 def conv_sequence_pt(
     in_channels: int,
     out_channels: int,
-    relu: bool = False,
+    act: bool = False,
     bn: bool = False,
+    activation: nn.Module = nn.ReLU(inplace=True),
     **kwargs: Any,
 ) -> list[nn.Module]:
     """Builds a convolutional-based layer sequence
@@ -99,8 +100,9 @@ def conv_sequence_pt(
     Args:
         in_channels: number of input channels
         out_channels: number of output channels
-        relu: whether ReLU should be used
+        act: should an activation layer be added
         bn: should a batch normalization layer be added
+        activation: the activation layer to be added if act is True
         **kwargs: additional arguments to be passed to the convolutional layer
 
     Returns:
@@ -114,8 +116,8 @@ def conv_sequence_pt(
     if bn:
         conv_seq.append(nn.BatchNorm2d(out_channels))
 
-    if relu:
-        conv_seq.append(nn.ReLU(inplace=True))
+    if act:
+        conv_seq.append(activation)
 
     return conv_seq
 
