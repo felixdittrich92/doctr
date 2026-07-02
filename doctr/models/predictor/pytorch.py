@@ -5,6 +5,7 @@
 
 from typing import Any
 
+import cv2
 import numpy as np
 import torch
 from torch import nn
@@ -14,6 +15,7 @@ from doctr.models._utils import get_language
 from doctr.models.detection.predictor import DetectionPredictor
 from doctr.models.layout.predictor import LayoutPredictor
 from doctr.models.recognition.predictor import RecognitionPredictor
+from doctr.models.table_structure.predictor import TablePredictor
 from doctr.utils.geometry import detach_scores
 
 from .base import _OCRPredictor
@@ -37,6 +39,9 @@ class OCRPredictor(nn.Module, _OCRPredictor):
         detect_language: if True, the language prediction will be added to the predictions for each
             page. Doing so will slightly deteriorate the overall latency.
         layout_predictor: optional layout detection module
+        table_predictor: optional table structure recognition module. Requires `layout_predictor`: table
+            regions are located by the layout model, cropped, and passed to this module. Words falling inside a
+            detected table are regrouped into a structured table and removed from the regular text output.
         **kwargs: keyword args of `DocumentBuilder`
     """
 
@@ -51,6 +56,7 @@ class OCRPredictor(nn.Module, _OCRPredictor):
         detect_orientation: bool = False,
         detect_language: bool = False,
         layout_predictor: LayoutPredictor | None = None,
+        table_predictor: TablePredictor | None = None,
         **kwargs: Any,
     ) -> None:
         nn.Module.__init__(self)
@@ -68,6 +74,14 @@ class OCRPredictor(nn.Module, _OCRPredictor):
         self.detect_orientation = detect_orientation
         self.detect_language = detect_language
         self.layout_predictor = layout_predictor.eval() if layout_predictor is not None else None
+        self.table_predictor = table_predictor.eval() if table_predictor is not None else None
+        # Layout class label whose regions are cropped and passed to the table model
+        self.table_class_name = "Table"
+        if self.table_predictor is not None and self.layout_predictor is None:
+            raise ValueError(
+                "`table_predictor` requires a `layout_predictor`: tables are located with the layout model, "
+                "cropped, and then passed to the table model."
+            )
 
     @torch.inference_mode()
     def forward(
@@ -80,6 +94,10 @@ class OCRPredictor(nn.Module, _OCRPredictor):
             raise ValueError("incorrect input shape: all pages are expected to be multi-channel 2D images.")
 
         origin_page_shapes = [page.shape[:2] for page in pages]
+
+        if not self.straighten_pages:
+            # Detect layout regions on the pages
+            regions = self.layout_predictor(pages, **kwargs) if self.layout_predictor is not None else None
 
         # Localize text elements
         loc_preds, out_maps = self.det_predictor(pages, return_maps=True, **kwargs)
@@ -102,6 +120,9 @@ class OCRPredictor(nn.Module, _OCRPredictor):
             pages = self._straighten_pages(pages, seg_maps, general_pages_orientations, origin_pages_orientations)
             # update page shapes after straightening
             origin_page_shapes = [page.shape[:2] for page in pages]
+
+            # Detect layout regions on the pages
+            regions = self.layout_predictor(pages, **kwargs) if self.layout_predictor is not None else None
 
             # Forward again to get predictions on straight pages
             loc_preds = self.det_predictor(pages, **kwargs)
@@ -146,8 +167,12 @@ class OCRPredictor(nn.Module, _OCRPredictor):
         else:
             languages_dict = None
 
-        # Detect layout regions on the (possibly straightened) pages
-        regions = self.layout_predictor(pages, **kwargs) if self.layout_predictor is not None else None
+        # Recognize table structure: locate tables with the layout model, crop each one and run the table model
+        tables = (
+            self._tables_from_regions(pages, regions, **kwargs)
+            if self.table_predictor is not None and regions is not None
+            else None
+        )
 
         out = self.doc_builder(
             pages,
@@ -159,5 +184,84 @@ class OCRPredictor(nn.Module, _OCRPredictor):
             orientations,
             languages_dict,
             regions,
+            tables,
         )
         return out
+
+    def _tables_from_regions(
+        self,
+        pages: list[np.ndarray],
+        regions: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> list[list[dict[str, Any]]]:
+        """Crop the table regions found by the layout model and run the table model on each crop.
+
+        Each `Table` region is rectified to an upright crop with a perspective transform (so straight boxes and
+        rotated polygons are both handled), the table model is applied per crop, and the predicted cell polygons
+        are mapped back to page-relative coordinates through the inverse transform. A page therefore yields one
+        structured table per detected `Table` region.
+
+        Args:
+            pages: the (possibly straightened) page images
+            regions: the per-page layout predictions `{"class_names", "boxes", "scores"}`
+            **kwargs: keyword arguments forwarded to the table predictor
+
+        Returns:
+            a per-page list of table grids `{"cells": [...], "num_rows": int, "num_cols": int}` in page-relative
+            coordinates
+        """
+        crops: list[np.ndarray] = []
+        # (page index, inverse transform, crop width, crop height, page width, page height)
+        crop_meta: list[tuple[int, np.ndarray, int, int, int, int]] = []
+        for p_idx, (page, region) in enumerate(zip(pages, regions)):
+            if region is None:
+                continue
+            h, w = page.shape[:2]
+            for cls_name, box in zip(region["class_names"], region["boxes"]):
+                if cls_name != self.table_class_name:
+                    continue
+                pts = np.asarray(box, dtype=np.float32).reshape(-1, 2)
+                if pts.shape[0] == 2:  # straight box (x_min, y_min, x_max, y_max) -> corners
+                    (bx0, by0), (bx1, by1) = pts
+                    src = np.array([[bx0, by0], [bx1, by0], [bx1, by1], [bx0, by1]], dtype=np.float32)
+                else:  # rotated 4-point polygon, already ordered (top-left, top-right, bottom-right, bottom-left)
+                    src = pts.copy()
+                # Relative -> absolute pixel corners
+                src[:, 0] *= w
+                src[:, 1] *= h
+                # Upright crop size from the region side lengths
+                crop_w = int(round(max(np.linalg.norm(src[1] - src[0]), np.linalg.norm(src[2] - src[3]))))
+                crop_h = int(round(max(np.linalg.norm(src[3] - src[0]), np.linalg.norm(src[2] - src[1]))))
+                if crop_w < 2 or crop_h < 2:
+                    continue
+                # Full-extent destination corners so crop-relative [0, 1] maps exactly to [0, crop] pixels
+                dst = np.array([[0, 0], [crop_w, 0], [crop_w, crop_h], [0, crop_h]], dtype=np.float32)
+                transform = cv2.getPerspectiveTransform(src, dst)
+                inverse = cv2.getPerspectiveTransform(dst, src)
+                crops.append(cv2.warpPerspective(page, transform, (crop_w, crop_h)))
+                crop_meta.append((p_idx, inverse, crop_w, crop_h, w, h))
+
+        tables_per_page: list[list[dict[str, Any]]] = [[] for _ in pages]
+        if len(crops) == 0:
+            return tables_per_page
+
+        grids = self.table_predictor(crops, **kwargs)  # type: ignore[misc]
+        for (p_idx, inverse, crop_w, crop_h, w, h), grid in zip(crop_meta, grids):
+            remapped_cells: list[dict[str, Any]] = []
+            for cell in grid["cells"]:
+                # Cell polygon is crop-relative -> crop pixels -> page pixels (inverse transform) -> page-relative
+                poly = np.asarray(cell["geometry"], dtype=np.float32).reshape(-1, 2)
+                poly[:, 0] *= crop_w
+                poly[:, 1] *= crop_h
+                poly = cv2.perspectiveTransform(poly[None, :, :], inverse)[0]
+                poly[:, 0] /= w
+                poly[:, 1] /= h
+                new_cell = dict(cell)
+                new_cell["geometry"] = poly.tolist()
+                remapped_cells.append(new_cell)
+            tables_per_page[p_idx].append({
+                "cells": remapped_cells,
+                "num_rows": grid["num_rows"],
+                "num_cols": grid["num_cols"],
+            })
+        return tables_per_page
