@@ -645,3 +645,198 @@ def test_kie_document():
     # Synthesize
     img_list = doc.synthesize()
     assert isinstance(img_list, list) and len(img_list) == len(pages)
+
+
+def _word_at(text, x0, y0, x1, y1):
+    return elements.Word(text, 0.95, ((x0, y0), (x1, y1)), 0.9, {"value": 0, "confidence": None})
+
+
+def _line_at(text, x0, y0, x1, y1, rtl=False):
+    """Build a line whose words are laid out geometrically (leftmost word = last logical word when rtl)"""
+    words = text.split()
+    step = (x1 - x0) / max(len(words), 1)
+    geo_words = words[::-1] if rtl else words
+    return elements.Line([
+        _word_at(word, x0 + idx * step, y0, x0 + (idx + 0.9) * step, y1) for idx, word in enumerate(geo_words)
+    ])
+
+
+def _reading_order_page():
+    """A page in the default builder configuration (single block) with a title, 2 columns & a footer"""
+    lines = [_line_at("A Two Column Study", 0.2, 0.05, 0.8, 0.09)]
+    lines += [_line_at(f"left line {idx}", 0.08, 0.14 + 0.05 * idx, 0.46, 0.17 + 0.05 * idx) for idx in range(3)]
+    lines += [_line_at(f"right line {idx}", 0.54, 0.14 + 0.05 * idx, 0.92, 0.17 + 0.05 * idx) for idx in range(3)]
+    lines += [_line_at("- item one", 0.08, 0.4, 0.46, 0.43), _line_at("Page 3 of 12", 0.4, 0.95, 0.6, 0.97)]
+    # Shuffle the lines to make sure the export does not rely on the input order
+    lines = [lines[idx] for idx in [5, 0, 8, 2, 4, 7, 1, 6, 3]]
+    layout = [
+        elements.LayoutElement("Title", 0.99, ((0.15, 0.04), (0.85, 0.1))),
+        elements.LayoutElement("Text", 0.98, ((0.06, 0.12), (0.48, 0.32))),
+        elements.LayoutElement("Text", 0.98, ((0.52, 0.12), (0.94, 0.32))),
+        elements.LayoutElement("List-item", 0.97, ((0.06, 0.38), (0.48, 0.45))),
+        elements.LayoutElement("Page-footer", 0.97, ((0.35, 0.94), (0.65, 0.98))),
+    ]
+    return elements.Page(
+        np.zeros((10, 10, 3), dtype=np.uint8), [elements.Block(lines=lines)], 0, (1000, 800), layout=layout
+    )
+
+
+def test_page_items_in_reading_order():
+    page = _reading_order_page()
+    items = page.items_in_reading_order()
+    assert all(isinstance(item, elements.Block) for item in items)
+    rendered = [item.render(line_break=" ") for item in items]
+    assert rendered[0] == "A Two Column Study"
+    assert rendered[-1] == "Page 3 of 12"
+    assert rendered.index("left line 0 left line 1 left line 2") < rendered.index(
+        "right line 0 right line 1 right line 2"
+    )
+    # Multi-block pages are ordered at the block level
+    top = elements.Block([_line_at("first words", 0.1, 0.1, 0.9, 0.15)])
+    bottom = elements.Block([_line_at("last words", 0.1, 0.5, 0.9, 0.55)])
+    page = elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [bottom, top], 0, (1000, 800))
+    assert [block.render() for block in page.items_in_reading_order()] == ["first words", "last words"]
+
+
+def test_page_export_as_markdown():
+    page = _reading_order_page()
+    markdown = page.export_as_markdown()
+    parts = markdown.split("\n\n")
+    assert parts[0] == "# A Two Column Study"
+    assert parts[1] == "left line 0\nleft line 1\nleft line 2"
+    # The list item belongs to the left column, hence it is read before the right column
+    assert parts[2] == "- \\- item one"  # list item, with the raw OCR dash escaped
+    assert parts[3] == "right line 0\nright line 1\nright line 2"
+    assert parts[4] == "Page 3 of 12"
+    # Page furniture can be dropped
+    assert "Page 3 of 12" not in page.export_as_markdown(include_furniture=False)
+    # Markdown structural characters are escaped by default
+    page = elements.Page(
+        np.zeros((10, 10, 3), dtype=np.uint8),
+        [elements.Block([_line_at("*bold* #tag [link]", 0.1, 0.1, 0.9, 0.15)])],
+        0,
+        (1000, 800),
+    )
+    assert page.export_as_markdown() == "\\*bold\\* \\#tag \\[link\\]"
+    assert page.export_as_markdown(escape=False) == "*bold* #tag [link]"
+    # Empty pages export to an empty string
+    assert elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [], 0, (1000, 800)).export_as_markdown() == ""
+
+
+def test_page_export_as_markdown_rtl():
+    # Two columns of Arabic text: the right column is read first, and the words of each line are emitted
+    # from the rightmost to the leftmost one
+    lines = [
+        _line_at("النص في العمود الأيمن", 0.54, 0.1, 0.92, 0.14, rtl=True),
+        _line_at("النص في العمود الأيسر", 0.08, 0.1, 0.46, 0.14, rtl=True),
+    ]
+    page = elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [elements.Block(lines=lines)], 0, (1000, 800))
+    markdown = page.export_as_markdown()
+    assert markdown == "النص في العمود الأيمن\n\nالنص في العمود الأيسر"
+    # An explicit direction takes precedence over the detection
+    assert page.export_as_markdown(direction="ltr").startswith("الأيسر")
+
+
+def test_page_export_with_tables():
+    cells = [
+        elements.TableCell("Name", 0.9, ((0.1, 0.55), (0.4, 0.6)), 0, 0, 0, 0),
+        elements.TableCell("Qty", 0.9, ((0.4, 0.55), (0.7, 0.6)), 0, 0, 1, 1),
+        elements.TableCell("Bolt", 0.9, ((0.1, 0.6), (0.4, 0.65)), 1, 1, 0, 0),
+        elements.TableCell("12|3", 0.9, ((0.4, 0.6), (0.7, 0.65)), 1, 1, 1, 1),
+    ]
+    table = elements.Table(cells, 2, 2, ((0.1, 0.55), (0.7, 0.65)), 0.95)
+    lines = [
+        _line_at("before the table", 0.1, 0.1, 0.9, 0.14),
+        _line_at("after the table", 0.1, 0.7, 0.9, 0.74),
+    ]
+    page = elements.Page(
+        np.zeros((10, 10, 3), dtype=np.uint8), [elements.Block(lines=lines)], 0, (1000, 800), tables=[table]
+    )
+    markdown = page.export_as_markdown()
+    assert markdown.split("\n\n") == [
+        "before the table",
+        "| Name | Qty |\n| --- | --- |\n| Bolt | 12\\|3 |",
+        "after the table",
+    ]
+    asciidoc = page.export_as_asciidoc()
+    assert "|===\n|Name |Qty\n\n|Bolt |12\\|3\n|===" in asciidoc
+    assert asciidoc.index("before the table") < asciidoc.index("|===") < asciidoc.index("after the table")
+
+
+def test_page_export_as_asciidoc():
+    page = _reading_order_page()
+    asciidoc = page.export_as_asciidoc()
+    parts = asciidoc.split("\n\n")
+    assert parts[0] == "== A Two Column Study"
+    assert parts[2] == "* {empty}- item one"
+    assert "Page 3 of 12" not in page.export_as_asciidoc(include_furniture=False)
+
+
+def test_page_export_as():
+    page = _reading_order_page()
+    assert page.export_as("markdown") == page.export_as("md") == page.export_as_markdown()
+    assert page.export_as("adoc") == page.export_as_asciidoc()
+    assert page.export_as("text") == page.render()
+    assert page.export_as("json") == page.export()
+    assert isinstance(page.export_as("xml")[0], bytes)
+    assert page.export_as("markdown", include_furniture=False) == page.export_as_markdown(include_furniture=False)
+    with pytest.raises(ValueError):
+        page.export_as("yaml")
+
+
+def test_document_export_as_markdown():
+    pages = [
+        elements.Page(
+            np.zeros((10, 10, 3), dtype=np.uint8),
+            [elements.Block([_line_at(f"page {idx} content", 0.1, 0.1, 0.9, 0.15)])],
+            idx,
+            (1000, 800),
+        )
+        for idx in range(2)
+    ]
+    doc = elements.Document(pages)
+    assert doc.export_as_markdown() == "page 0 content\n\n---\n\npage 1 content"
+    assert doc.export_as_asciidoc() == "page 0 content\n\n<<<\n\npage 1 content"
+    assert doc.export_as_markdown(page_break="\n\n") == "page 0 content\n\npage 1 content"
+    assert doc.export_as("markdown") == doc.export_as_markdown()
+    assert doc.export_as("text") == doc.render()
+    assert doc.export_as("json") == doc.export()
+    assert len(doc.export_as("xml")) == 2
+    with pytest.raises(ValueError):
+        doc.export_as("pdf")
+
+
+def test_kie_page_export_as_markdown():
+    predictions = {
+        CLASS_NAME: [
+            elements.Prediction("second", 0.9, ((0.1, 0.5), (0.9, 0.6)), 0.9, {"value": 0, "confidence": None}),
+            elements.Prediction("first", 0.9, ((0.1, 0.1), (0.9, 0.2)), 0.9, {"value": 0, "confidence": None}),
+        ]
+    }
+    page = elements.KIEPage(np.zeros((10, 10, 3), dtype=np.uint8), predictions, 0, (1000, 800))
+    assert page.export_as_markdown() == f"**{CLASS_NAME}**\n\n- first\n- second"
+    assert page.export_as_asciidoc() == f"*{CLASS_NAME}*\n\n* first\n* second"
+    assert page.export_as("md") == page.export_as_markdown()
+    with pytest.raises(ValueError):
+        page.export_as("yaml")
+    doc = elements.KIEDocument([page])
+    assert doc.export_as_markdown() == page.export_as_markdown()
+
+
+def test_page_export_as_markdown_list_items():
+    # Three list items spaced well apart (so the generic paragraph grouping keeps them separate) but each
+    # covered by a List-item layout region: they must be coalesced into a single bulleted block.
+    lines = [_line_at(f"item number {idx}", 0.1, 0.1 + 0.1 * idx, 0.5, 0.13 + 0.1 * idx) for idx in range(3)]
+    layout = [
+        elements.LayoutElement("List-item", 0.9, ((0.08, 0.09 + 0.1 * idx), (0.52, 0.14 + 0.1 * idx)))
+        for idx in range(3)
+    ]
+    page = elements.Page(
+        np.zeros((10, 10, 3), dtype=np.uint8), [elements.Block(lines=lines)], 0, (1000, 800), layout=layout
+    )
+    assert page.export_as_markdown() == "- item number 0\n- item number 1\n- item number 2"
+    assert page.export_as_asciidoc() == "* item number 0\n* item number 1\n* item number 2"
+    # the whole list is a single block in reading order
+    items = page.items_in_reading_order()
+    assert len(items) == 1
+    assert len(items[0].lines) == 3

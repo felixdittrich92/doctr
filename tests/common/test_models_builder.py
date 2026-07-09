@@ -96,7 +96,7 @@ def test_documentbuilder():
     # Repr
     assert (
         repr(doc_builder) == "DocumentBuilder(resolve_lines=True, "
-        "resolve_blocks=True, paragraph_break=0.035, export_as_straight_boxes=False)"
+        "resolve_blocks=True, paragraph_break=0.035, export_as_straight_boxes=False, keep_reading_order=False)"
     )
 
 
@@ -185,7 +185,7 @@ def test_kiedocumentbuilder():
     # Repr
     assert (
         repr(doc_builder) == "KIEDocumentBuilder(resolve_lines=True, "
-        "resolve_blocks=True, paragraph_break=0.035, export_as_straight_boxes=False)"
+        "resolve_blocks=True, paragraph_break=0.035, export_as_straight_boxes=False, keep_reading_order=False)"
     )
 
 
@@ -581,3 +581,41 @@ def test_documentbuilder_tables_empty_cells():
     assert out.pages[0].tables == []
     # the word stays in the regular blocks since it was never consumed by a table
     assert [w.value for b in out.pages[0].blocks for line in b.lines for w in line.words] == ["hello"]
+
+
+def test_documentbuilder_keep_reading_order():
+    # Two columns of 3 lines each: a naive top-down sort interleaves the columns
+    left = [[0.1, 0.1 + 0.2 * idx, 0.3, 0.2 + 0.2 * idx] for idx in range(3)]
+    right = [[0.6, 0.1 + 0.2 * idx, 0.8, 0.2 + 0.2 * idx] for idx in range(3)]
+    boxes = np.asarray(left + right)
+    words = [(f"L{idx}", 0.9) for idx in range(3)] + [(f"R{idx}", 0.9) for idx in range(3)]
+    crop_orientations = [{"value": 0, "confidence": None}] * len(words)
+    args = (
+        [np.zeros((100, 100, 3), dtype=np.uint8)],
+        [boxes],
+        [np.ones(len(words))],
+        [words],
+        [(100, 100)],
+        [crop_orientations],
+    )
+
+    doc = builder.DocumentBuilder(resolve_blocks=True, keep_reading_order=True)(*args)
+    assert doc.pages[0].render(block_break=" ").split() == ["L0", "L1", "L2", "R0", "R1", "R2"]
+    # Without the flag, the blocks keep their original (interleaved) order
+    doc = builder.DocumentBuilder(resolve_blocks=True, keep_reading_order=False)(*args)
+    assert doc.pages[0].render(block_break=" ").split() != ["L0", "L1", "L2", "R0", "R1", "R2"]
+
+    # Layout regions are used to place page furniture: the top line is labeled as a page footer -> emitted last
+    boxes = np.asarray([[0.1, 0.05, 0.9, 0.1], [0.1, 0.3, 0.9, 0.4], [0.1, 0.5, 0.9, 0.6]])
+    words = [("footer", 0.9), ("first", 0.9), ("second", 0.9)]
+    regions = {"boxes": np.asarray([[0.05, 0.02, 0.95, 0.15]]), "class_names": ["Page-footer"], "scores": [0.9]}
+    doc = builder.DocumentBuilder(resolve_blocks=True, keep_reading_order=True)(
+        [np.zeros((100, 100, 3), dtype=np.uint8)],
+        [boxes],
+        [np.ones(3)],
+        [words],
+        [(100, 100)],
+        [[{"value": 0, "confidence": None}] * 3],
+        regions=[regions],
+    )
+    assert doc.pages[0].render(block_break=" ").split() == ["first", "second", "footer"]

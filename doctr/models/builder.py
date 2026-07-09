@@ -23,6 +23,7 @@ from doctr.io.elements import (
     TableCell,
     Word,
 )
+from doctr.models.reading_order import ReadingOrderPredictor, assign_layout_labels
 from doctr.utils.geometry import estimate_page_angle, resolve_enclosing_bbox, resolve_enclosing_rbbox, rotate_boxes
 from doctr.utils.repr import NestedObject
 
@@ -38,6 +39,11 @@ class DocumentBuilder(NestedObject):
         paragraph_break: relative length of the minimum space separating paragraphs
         export_as_straight_boxes: if True, force straight boxes in the export (fit a rectangle
             box to all rotated boxes). Else, keep the boxes format unchanged, no matter what it is.
+        keep_reading_order: if True, sort the blocks of every page in reading order (cf.
+            :mod:`doctr.models.reading_order`). The reading direction is inferred from the recognized text and
+            the layout regions, when available, are used to place the page furniture. Best combined with
+            ``resolve_blocks=True``. The reading-order-aware exports (e.g. ``Document.export_as_markdown``)
+            apply reading order regardless of this flag.
     """
 
     def __init__(
@@ -46,11 +52,13 @@ class DocumentBuilder(NestedObject):
         resolve_blocks: bool = False,
         paragraph_break: float = 0.035,
         export_as_straight_boxes: bool = False,
+        keep_reading_order: bool = False,
     ) -> None:
         self.resolve_lines = resolve_lines
         self.resolve_blocks = resolve_blocks
         self.paragraph_break = paragraph_break
         self.export_as_straight_boxes = export_as_straight_boxes
+        self.keep_reading_order = keep_reading_order
 
     @staticmethod
     def _sort_boxes(boxes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -517,11 +525,47 @@ class DocumentBuilder(NestedObject):
 
         return blocks
 
+    def _sort_blocks_reading_order(
+        self,
+        blocks: list[Block],
+        word_preds: list[tuple[str, float]],
+        page_regions: dict[str, Any] | None,
+        language: dict[str, Any] | None,
+    ) -> list[Block]:
+        """Sort the blocks of a page in reading order.
+
+        Args:
+            blocks: the blocks of the page
+            word_preds: list of (text, confidence) for the words of the page, used to infer the reading
+                direction
+            page_regions: the layout prediction of the page (used to position the page furniture), or None
+            language: the language prediction of the page (used as a direction hint), or None
+
+        Returns:
+            the blocks sorted in reading order
+        """
+        if len(blocks) <= 1:
+            return blocks
+        geoms = [block.geometry for block in blocks]
+        labels = None
+        if page_regions is not None and len(page_regions.get("boxes", [])) > 0:
+            class_names = page_regions.get("class_names") or []
+            if len(class_names) == len(page_regions["boxes"]):
+                labels = assign_layout_labels(geoms, page_regions["boxes"], class_names)
+        order = ReadingOrderPredictor()(
+            geoms,
+            texts=[text for text, _ in word_preds],
+            labels=labels,
+            language=language.get("value") if isinstance(language, dict) else None,
+        )
+        return [blocks[idx] for idx in order]
+
     def extra_repr(self) -> str:
         return (
             f"resolve_lines={self.resolve_lines}, resolve_blocks={self.resolve_blocks}, "
             f"paragraph_break={self.paragraph_break}, "
-            f"export_as_straight_boxes={self.export_as_straight_boxes}"
+            f"export_as_straight_boxes={self.export_as_straight_boxes}, "
+            f"keep_reading_order={self.keep_reading_order}"
         )
 
     def __call__(
@@ -614,15 +658,19 @@ class DocumentBuilder(NestedObject):
                 word_preds = [wp for wp, k in zip(word_preds, keep) if k]
                 word_crop_orientations = [co for co, k in zip(word_crop_orientations, keep) if k]
 
+            page_blocks = self._build_blocks(
+                page_boxes,
+                loc_scores,
+                word_preds,
+                word_crop_orientations,
+            )
+            if self.keep_reading_order:
+                page_blocks = self._sort_blocks_reading_order(page_blocks, word_preds, page_regions, language)
+
             _pages.append(
                 Page(
                     page,
-                    self._build_blocks(
-                        page_boxes,
-                        loc_scores,
-                        word_preds,
-                        word_crop_orientations,
-                    ),
+                    page_blocks,
                     _idx,
                     shape,
                     orientation,
@@ -644,6 +692,7 @@ class KIEDocumentBuilder(DocumentBuilder):
         paragraph_break: relative length of the minimum space separating paragraphs
         export_as_straight_boxes: if True, force straight boxes in the export (fit a rectangle
             box to all rotated boxes). Else, keep the boxes format unchanged, no matter what it is.
+        keep_reading_order: if True, the blocks of each page are sorted in reading order.
     """
 
     def __call__(  # type: ignore[override]
