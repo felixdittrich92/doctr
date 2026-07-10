@@ -628,6 +628,39 @@ For reference, here is a sample XML byte string output:
     </body>
   </html>
 
+To export the output in reading order as Markdown or AsciiDoc, you can use the `export_as_markdown` and
+`export_as_asciidoc` methods (also available on a single :class:`Page`). Reading order is always applied by
+these exporters: the content is linearized column by column, the reading direction is inferred from the
+recognized text (e.g. right-to-left for Arabic or Hebrew documents), and — when the predictor is run with
+layout detection (``detect_layout=True``) — the layout regions are used to render headings, list items and
+recognized tables, and to place the page furniture (headers, footers, footnotes):
+
+.. code-block:: python
+
+  markdown_output = result.export_as_markdown()
+  asciidoc_output = result.export_as_asciidoc()
+
+The `export_as` method is a convenience dispatcher over all the formats above::
+
+  result.export_as("markdown")  # or "md"
+  result.export_as("asciidoc")  # or "adoc"
+  result.export_as("text")      # same as render()
+  result.export_as("json")      # same as export()
+  result.export_as("xml")       # same as export_as_xml()
+
+The reading-order primitives live in :mod:`doctr.models.reading_order` (see :ref:`the API reference
+<reading_order>`). They can be used on their own, for instance
+:func:`~doctr.models.reading_order.sort_reading_order` to order a list of boxes or
+:func:`~doctr.models.reading_order.detect_text_direction` to infer the base direction of a text, and
+:meth:`Page.items_in_reading_order` returns the blocks & tables of a page in reading order.
+
+The document structure itself can also be produced in reading order by building the predictor with
+``keep_reading_order=True``, which sorts the blocks of every page in reading order (best combined with
+``resolve_blocks=True``)::
+
+  predictor = ocr_predictor(pretrained=True, resolve_blocks=True)
+  predictor.doc_builder.keep_reading_order = True
+
 
 Advanced options
 ^^^^^^^^^^^^^^^^
