@@ -326,3 +326,62 @@ def test_extract_rcrops(mock_pdf, assume_horizontal):
 
     # No box
     assert geometry.extract_rcrops(doc_img, np.zeros((0, 4, 2)), assume_horizontal=assume_horizontal) == []
+
+
+@pytest.mark.parametrize("angle", [5, 12, -5, -12, 90 + 13, 180 + 13, 270 + 13])
+@pytest.mark.parametrize("shape", [(800, 600), (600, 800), (700, 700)])
+def test_straighten_page_inverse(angle, shape):
+    # Sub-degree angles excluded: interpolation blends every pixel at small rotations
+    h, w = shape
+    page = np.ones((h, w, 3), dtype=np.uint8) * 255
+    page[99:102, 99:102] = (255, 0, 0)
+    page[99:102, 499:502] = (0, 255, 0)
+    page[699:702, 99:102] = (0, 0, 255)
+    page[699:702, 499:502] = (255, 255, 0)
+    page[399:402, 299:302] = (255, 0, 255)
+    dots = [(100, 100), (500, 100), (100, 700), (500, 700), (300, 400)]
+    colours = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
+
+    straightened, m_inv = geometry.straighten_page(page, angle)
+
+    errors = []
+    for (dx, dy), colour in zip(dots, colours):
+        mask = np.all(straightened == colour, axis=-1)
+        found = np.argwhere(mask)
+        if len(found) == 0:
+            continue
+        fy, fx = found.mean(axis=0)
+        recovered = (np.array([float(fx), float(fy), 1.0]) @ m_inv.T)[:2]
+        errors.append(np.linalg.norm(recovered - np.array([float(dx), float(dy)])))
+
+    if len(errors) == 0:
+        return
+    assert max(errors) < 0.6, f"Max remap error {max(errors):.4f}px exceeds 0.6px threshold"
+
+
+def test_straighten_page_projected_corner_clamp():
+    # Regression: fp error can project a content corner to cx=-1; negative slice collapsed the crop to a 1px strip
+    h, w = 2291, 2025
+    angle = 30
+    page = np.ones((h, w, 3), dtype=np.uint8) * 255
+    # 9x9 dots at interior positions (>= 200px from any edge)
+    dots = [(200, 200), (500, 500), (w // 2, h // 2), (w - 300, h - 300), (w - 300, 300), (300, h - 300)]
+    colours = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+    for (dx, dy), colour in zip(dots, colours):
+        page[dy - 9 : dy + 10, dx - 9 : dx + 10] = colour
+
+    straightened, m_inv = geometry.straighten_page(page, angle)
+    assert straightened.shape[1] > 1, "Crop must not produce a 1-pixel-wide strip"
+
+    errors = []
+    for (dx, dy), colour in zip(dots, colours):
+        mask = np.all(straightened == colour, axis=-1)
+        found = np.argwhere(mask)
+        if len(found) == 0:
+            continue
+        fy, fx = found.mean(axis=0)
+        recovered = (np.array([float(fx), float(fy), 1.0]) @ m_inv.T)[:2]
+        errors.append(np.linalg.norm(recovered - np.array([float(dx), float(dy)])))
+
+    assert len(errors) > 0, "No fiducial dots survived interpolation"
+    assert max(errors) < 0.6, f"Max remap error {max(errors):.4f}px exceeds 0.6px threshold"

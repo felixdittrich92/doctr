@@ -36,6 +36,8 @@ class KIEPredictor(nn.Module, _KIEPredictor):
             page. Doing so will slightly deteriorate the overall latency.
         detect_language: if True, the language prediction will be added to the predictions for each
             page. Doing so will slightly deteriorate the overall latency.
+        preserve_original_coords: if True and straighten_pages is True, bounding boxes are mapped back to the
+            original page coordinates. Useful for redaction and annotation.
         layout_predictor: optional layout detection module
         **kwargs: keyword args of `DocumentBuilder`
     """
@@ -50,6 +52,7 @@ class KIEPredictor(nn.Module, _KIEPredictor):
         symmetric_pad: bool = True,
         detect_orientation: bool = False,
         detect_language: bool = False,
+        preserve_original_coords: bool = False,
         layout_predictor: LayoutPredictor | None = None,
         **kwargs: Any,
     ) -> None:
@@ -63,6 +66,7 @@ class KIEPredictor(nn.Module, _KIEPredictor):
             preserve_aspect_ratio,
             symmetric_pad,
             detect_orientation,
+            preserve_original_coords=preserve_original_coords,
             **kwargs,
         )
         self.detect_orientation = detect_orientation
@@ -110,9 +114,14 @@ class KIEPredictor(nn.Module, _KIEPredictor):
             general_pages_orientations = None
             origin_pages_orientations = None
         if self.straighten_pages:
-            pages = self._straighten_pages(pages, seg_maps, general_pages_orientations, origin_pages_orientations)
+            _orig_shapes = origin_page_shapes
+            _orig_pages = list(pages)
+            pages, m_invs = self._straighten_pages(
+                pages, seg_maps, general_pages_orientations, origin_pages_orientations
+            )
             # update page shapes after straightening
             origin_page_shapes = [page.shape[:2] for page in pages]
+            _straight_shapes = origin_page_shapes
 
             # Detect layout regions on the pages
             regions = self.layout_predictor(pages, **kwargs) if self.layout_predictor is not None else None
@@ -192,6 +201,10 @@ class KIEPredictor(nn.Module, _KIEPredictor):
             languages_dict,
             regions,
         )
+
+        # manipulate the already built Document to restore the original pages / shapes and geometries
+        if self.straighten_pages and self.preserve_original_coords:
+            out = self._remap_to_original_coords(out, _orig_shapes, _straight_shapes, m_invs, _orig_pages)  # type: ignore[assignment]
         return out
 
     @staticmethod
