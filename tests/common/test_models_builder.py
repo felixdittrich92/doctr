@@ -96,7 +96,7 @@ def test_documentbuilder():
     # Repr
     assert (
         repr(doc_builder) == "DocumentBuilder(resolve_lines=True, "
-        "resolve_blocks=True, paragraph_break=0.035, export_as_straight_boxes=False)"
+        "resolve_blocks=True, paragraph_break=0.035, export_as_straight_boxes=False, keep_reading_order=False)"
     )
 
 
@@ -185,7 +185,7 @@ def test_kiedocumentbuilder():
     # Repr
     assert (
         repr(doc_builder) == "KIEDocumentBuilder(resolve_lines=True, "
-        "resolve_blocks=True, paragraph_break=0.035, export_as_straight_boxes=False)"
+        "resolve_blocks=True, paragraph_break=0.035, export_as_straight_boxes=False, keep_reading_order=False)"
     )
 
 
@@ -581,3 +581,190 @@ def test_documentbuilder_tables_empty_cells():
     assert out.pages[0].tables == []
     # the word stays in the regular blocks since it was never consumed by a table
     assert [w.value for b in out.pages[0].blocks for line in b.lines for w in line.words] == ["hello"]
+
+
+def test_documentbuilder_keep_reading_order():
+    # Two columns of 3 lines each: a naive top-down sort interleaves the columns
+    left = [[0.1, 0.1 + 0.2 * idx, 0.3, 0.2 + 0.2 * idx] for idx in range(3)]
+    right = [[0.6, 0.1 + 0.2 * idx, 0.8, 0.2 + 0.2 * idx] for idx in range(3)]
+    boxes = np.asarray(left + right)
+    words = [(f"L{idx}", 0.9) for idx in range(3)] + [(f"R{idx}", 0.9) for idx in range(3)]
+    crop_orientations = [{"value": 0, "confidence": None}] * len(words)
+    args = (
+        [np.zeros((100, 100, 3), dtype=np.uint8)],
+        [boxes],
+        [np.ones(len(words))],
+        [words],
+        [(100, 100)],
+        [crop_orientations],
+    )
+
+    doc = builder.DocumentBuilder(resolve_blocks=True, keep_reading_order=True)(*args)
+    assert doc.pages[0].render(block_break=" ").split() == ["L0", "L1", "L2", "R0", "R1", "R2"]
+    # Without the flag, the blocks keep their original (interleaved) order
+    doc = builder.DocumentBuilder(resolve_blocks=True, keep_reading_order=False)(*args)
+    assert doc.pages[0].render(block_break=" ").split() != ["L0", "L1", "L2", "R0", "R1", "R2"]
+
+    # Layout regions are used to place page furniture: the top line is labeled as a page footer -> emitted last
+    boxes = np.asarray([[0.1, 0.05, 0.9, 0.1], [0.1, 0.3, 0.9, 0.4], [0.1, 0.5, 0.9, 0.6]])
+    words = [("footer", 0.9), ("first", 0.9), ("second", 0.9)]
+    regions = {"boxes": np.asarray([[0.05, 0.02, 0.95, 0.15]]), "class_names": ["Page-footer"], "scores": [0.9]}
+    doc = builder.DocumentBuilder(resolve_blocks=True, keep_reading_order=True)(
+        [np.zeros((100, 100, 3), dtype=np.uint8)],
+        [boxes],
+        [np.ones(3)],
+        [words],
+        [(100, 100)],
+        [[{"value": 0, "confidence": None}] * 3],
+        regions=[regions],
+    )
+    assert doc.pages[0].render(block_break=" ").split() == ["first", "second", "footer"]
+
+
+def _rot_poly(x0, y0, x1, y1, deg, cx=0.5, cy=0.5):
+    a = np.deg2rad(deg)
+    ca, sa = np.cos(a), np.sin(a)
+    return [
+        [cx + (x - cx) * ca - (y - cy) * sa, cy + (x - cx) * sa + (y - cy) * ca]
+        for x, y in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    ]
+
+
+def test_build_tables_rotated_cell_word_order():
+    deg = -30
+    cb = {
+        (0, 0): (0.30, 0.40, 0.62, 0.46),
+        (0, 1): (0.63, 0.40, 0.85, 0.46),
+        (1, 0): (0.30, 0.47, 0.62, 0.53),
+        (1, 1): (0.63, 0.47, 0.85, 0.53),
+    }
+    cells = [
+        {
+            "geometry": _rot_poly(*cb[(r, c)], deg),
+            "score": 0.9,
+            "row_start": r,
+            "row_end": r,
+            "col_start": c,
+            "col_end": c,
+        }
+        for r in range(2)
+        for c in range(2)
+    ]
+    wb = [
+        ("one", 0.31, 0.405, 0.40, 0.455),
+        ("two", 0.42, 0.405, 0.51, 0.455),
+        ("three", 0.53, 0.405, 0.61, 0.455),
+        ("B", 0.64, 0.405, 0.84, 0.455),
+        ("C", 0.31, 0.475, 0.61, 0.525),
+        ("D", 0.64, 0.475, 0.84, 0.525),
+    ]
+    polys = np.array([_rot_poly(x0, y0, x1, y1, deg) for _, x0, y0, x1, y1 in wb], dtype=np.float32)
+    preds = [(t, 0.9) for t, *_ in wb]
+    doc = builder.DocumentBuilder()(
+        [np.zeros((100, 100, 3), dtype=np.uint8)],
+        [polys],
+        [np.ones(6)],
+        [preds],
+        [(100, 100)],
+        [[{"value": 0, "confidence": None}] * 6],
+        tables=[[{"cells": cells, "num_rows": 2, "num_cols": 2}]],
+    )
+    assert doc.pages[0].tables[0].to_grid()[0][0] == "one two three"
+
+
+def test_build_tables_nearest_cell_fallback():
+    cb = {
+        (0, 0): (0.30, 0.40, 0.55, 0.46),
+        (0, 1): (0.57, 0.40, 0.82, 0.46),
+        (1, 0): (0.30, 0.48, 0.55, 0.54),
+        (1, 1): (0.57, 0.48, 0.82, 0.54),
+    }
+    cells = [
+        {"geometry": list(cb[(r, c)]), "score": 0.9, "row_start": r, "row_end": r, "col_start": c, "col_end": c}
+        for r in range(2)
+        for c in range(2)
+    ]
+    wb = [
+        ("A", 0.31, 0.405, 0.54, 0.455),
+        ("B", 0.58, 0.405, 0.81, 0.455),
+        ("gap", 0.34, 0.462, 0.52, 0.478),  # center in the gap between the two rows, outside all cells
+        ("C", 0.31, 0.485, 0.54, 0.535),
+        ("D", 0.58, 0.485, 0.81, 0.535),
+        ("BODY", 0.31, 0.70, 0.60, 0.74),
+    ]  # far below the table
+    polys = np.array([[x0, y0, x1, y1] for _, x0, y0, x1, y1 in wb], dtype=np.float32)
+    preds = [(t, 0.9) for t, *_ in wb]
+    doc = builder.DocumentBuilder()(
+        [np.zeros((100, 100, 3), dtype=np.uint8)],
+        [polys],
+        [np.ones(6)],
+        [preds],
+        [(100, 100)],
+        [[{"value": 0, "confidence": None}] * 6],
+        tables=[[{"cells": cells, "num_rows": 2, "num_cols": 2}]],
+    )
+    grid = doc.pages[0].tables[0].to_grid()
+    assert any("gap" in " ".join(row) for row in grid)
+    body = [w.value for b in doc.pages[0].blocks for line in b.lines for w in line.words]
+    assert body == ["BODY"]
+
+
+def test_documentbuilder_keep_reading_order_rotated():
+    deg = 25
+    height, width = 1000, 800
+    angle = np.deg2rad(deg)
+    rot = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    center = np.array([width / 2, height / 2])
+
+    def _rot_box(x0, y0, x1, y1):
+        pts = np.array([
+            [x0 * width, y0 * height],
+            [x1 * width, y0 * height],
+            [x1 * width, y1 * height],
+            [x0 * width, y1 * height],
+        ])
+        return ((pts - center) @ rot.T + center) / [width, height]
+
+    left = [_rot_box(0.1, 0.1 + 0.2 * idx, 0.3, 0.2 + 0.2 * idx) for idx in range(3)]
+    right = [_rot_box(0.6, 0.1 + 0.2 * idx, 0.8, 0.2 + 0.2 * idx) for idx in range(3)]
+    polys = np.asarray(left + right, dtype=np.float32)
+    words = [(f"L{idx}", 0.9) for idx in range(3)] + [(f"R{idx}", 0.9) for idx in range(3)]
+    doc = builder.DocumentBuilder(resolve_blocks=True, keep_reading_order=True)(
+        [np.zeros((height, width, 3), dtype=np.uint8)],
+        [polys],
+        [np.ones(len(words))],
+        [words],
+        [(height, width)],
+        [[{"value": 0, "confidence": None}] * len(words)],
+    )
+    assert doc.pages[0].render(block_break=" ").split() == ["L0", "L1", "L2", "R0", "R1", "R2"]
+
+
+def test_resolve_lines_small_skew_portrait():
+    height, width = 4624, 2608
+
+    def _rot_word(x0, y0, x1, y1, deg):
+        angle = np.deg2rad(deg)
+        rot = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+        center = np.array([width / 2, height / 2])
+        pts = np.array([
+            [x0 * width, y0 * height],
+            [x1 * width, y0 * height],
+            [x1 * width, y1 * height],
+            [x0 * width, y1 * height],
+        ])
+        return ((pts - center) @ rot.T + center) / [width, height]
+
+    doc_builder = builder.DocumentBuilder()
+    for deg in (2, 4, 6, 8):
+        polys = np.array(
+            [
+                _rot_word(0.12 + 0.073 * c, 0.08 + 0.015 * r, 0.185 + 0.073 * c, 0.091 + 0.015 * r, deg)
+                for r in range(14)
+                for c in range(10)
+            ],
+            dtype=np.float32,
+        )
+        lines = doc_builder._resolve_lines(polys, (height, width))
+        assert len(lines) == 14, f"{len(lines)} lines at {deg} deg"
+        assert all(line == [r * 10 + c for c in range(10)] for r, line in enumerate(lines))

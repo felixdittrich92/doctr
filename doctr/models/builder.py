@@ -23,7 +23,14 @@ from doctr.io.elements import (
     TableCell,
     Word,
 )
-from doctr.utils.geometry import estimate_page_angle, resolve_enclosing_bbox, resolve_enclosing_rbbox, rotate_boxes
+from doctr.models.reading_order import ReadingOrderPredictor, assign_layout_labels, deskew_reading_geometries
+from doctr.utils.geometry import (
+    estimate_page_angle,
+    order_points,
+    resolve_enclosing_bbox,
+    resolve_enclosing_rbbox,
+    rotate_boxes,
+)
 from doctr.utils.repr import NestedObject
 
 __all__ = ["DocumentBuilder"]
@@ -38,6 +45,11 @@ class DocumentBuilder(NestedObject):
         paragraph_break: relative length of the minimum space separating paragraphs
         export_as_straight_boxes: if True, force straight boxes in the export (fit a rectangle
             box to all rotated boxes). Else, keep the boxes format unchanged, no matter what it is.
+        keep_reading_order: if True, sort the blocks of every page in reading order (cf.
+            :mod:`doctr.models.reading_order`). The reading direction is inferred from the recognized text and
+            the layout regions, when available, are used to place the page furniture. Best combined with
+            `resolve_blocks=True`. The reading-order-aware exports (e.g. `Document.export_as_markdown`)
+            apply reading order regardless of this flag.
     """
 
     def __init__(
@@ -46,18 +58,24 @@ class DocumentBuilder(NestedObject):
         resolve_blocks: bool = False,
         paragraph_break: float = 0.035,
         export_as_straight_boxes: bool = False,
+        keep_reading_order: bool = False,
     ) -> None:
         self.resolve_lines = resolve_lines
         self.resolve_blocks = resolve_blocks
         self.paragraph_break = paragraph_break
         self.export_as_straight_boxes = export_as_straight_boxes
+        self.keep_reading_order = keep_reading_order
 
     @staticmethod
-    def _sort_boxes(boxes: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _sort_boxes(boxes: np.ndarray, shape: tuple[int, int] | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Sort bounding boxes from top to bottom, left to right
 
         Args:
             boxes: bounding boxes of shape (N, 4) or (N, 4, 2) (in case of rotated bbox)
+            shape: the page dimensions (height, width). The de-skew angle is estimated in absolute
+                coordinates, since relative coordinates distort angles by the page aspect ratio (a 6 degree
+                skew on a portrait page measures below 4 degrees in relative coordinates, which used to fall
+                under the rotation threshold and fragment every line).
 
         Returns:
             tuple: indices of ordered boxes of shape (N,), boxes
@@ -66,11 +84,15 @@ class DocumentBuilder(NestedObject):
                 so that we fit the lines afterwards to the straigthened page
         """
         if boxes.ndim == 3:
+            height, width = shape if shape is not None else (1024, 1024)
+            # Line grouping is sensitive to skew as soon as the drift along a line approaches the line
+            # height (about 1 degree for a page-wide line), hence the low rotation threshold
+            angle = estimate_page_angle(boxes * np.array([width, height], dtype=boxes.dtype))
             boxes = rotate_boxes(
                 loc_preds=boxes,
-                angle=-estimate_page_angle(boxes),
-                orig_shape=(1024, 1024),
-                min_angle=5.0,
+                angle=-angle,
+                orig_shape=(height, width),
+                min_angle=1.0,
             )
             boxes = np.concatenate((boxes.min(1), boxes.max(1)), -1)
         med_height = float(np.median(boxes[:, 3] - boxes[:, 1]))
@@ -116,17 +138,18 @@ class DocumentBuilder(NestedObject):
 
         return lines
 
-    def _resolve_lines(self, boxes: np.ndarray) -> list[list[int]]:
+    def _resolve_lines(self, boxes: np.ndarray, shape: tuple[int, int] | None = None) -> list[list[int]]:
         """Order boxes to group them in lines
 
         Args:
             boxes: bounding boxes of shape (N, 4) or (N, 4, 2) in case of rotated bbox
+            shape: the page dimensions (height, width), used to de-skew rotated pages exactly
 
         Returns:
             nested list of box indices
         """
         # Sort boxes, and straighten the boxes if they are rotated
-        idxs, boxes = self._sort_boxes(boxes)
+        idxs, boxes = self._sort_boxes(boxes, shape)
 
         # Compute median for boxes heights
         y_med = np.median(boxes[:, 3] - boxes[:, 1])
@@ -285,7 +308,10 @@ class DocumentBuilder(NestedObject):
         if arr.ndim == 1:  # straight box (xmin, ymin, xmax, ymax)
             x0, y0, x1, y1 = arr
             return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float32)
-        return arr.reshape(-1, 2)
+        # Normalize the vertex order (TL, TR, BR, BL): the containment test requires a non self-intersecting
+        # cyclic polygon and the table angle estimation reads the top edge, so the cell polygon must not
+        # depend on the vertex convention of the table model
+        return order_points(arr.reshape(-1, 2))
 
     @staticmethod
     def _points_in_polygons(points: np.ndarray, polys: np.ndarray) -> np.ndarray:
@@ -309,6 +335,33 @@ class DocumentBuilder(NestedObject):
         crossing = ((yi > py) != (yj > py)) & (px < (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi)
         # A point is inside when a ray crosses the polygon boundary an odd number of times
         return (crossing.sum(axis=-1) % 2).astype(bool)
+
+    @staticmethod
+    def _order_cell_words(w_idcs: list[int], centers: np.ndarray, heights: np.ndarray) -> list[int]:
+        """Order the words of a table cell in reading order: rows top to bottom, words left to right.
+
+        Args:
+            w_idcs: indices of the cell's words
+            centers: word centers of shape (N, 2), de-skewed for rotated pages
+            heights: per-word heights of shape (N,) (rotation-invariant)
+
+        Returns:
+            the cell's word indices in reading order
+        """
+        idcs = sorted(w_idcs, key=lambda i: float(centers[i][1]))
+        med_height = float(np.median([heights[i] for i in idcs]))
+        if not np.isfinite(med_height) or med_height <= 0:
+            med_height = 1.0
+        rows: list[list[int]] = [[idcs[0]]]
+        y_sum = float(centers[idcs[0]][1])
+        for idx in idcs[1:]:
+            if float(centers[idx][1]) - y_sum / len(rows[-1]) < med_height / 2:
+                rows[-1].append(idx)
+                y_sum += float(centers[idx][1])
+            else:
+                rows.append([idx])
+                y_sum = float(centers[idx][1])
+        return [idx for row in rows for idx in sorted(row, key=lambda i: float(centers[i][0]))]
 
     @staticmethod
     def _localize_logic(cells: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int, int]:
@@ -345,12 +398,6 @@ class DocumentBuilder(NestedObject):
     ) -> tuple[list[Table], np.ndarray]:
         """Assign detected words to table cells and build the page tables.
 
-        A page may contain several tables; each one is provided as its own grid (the OCR pipeline detects table
-        regions with the layout model, then runs the table model on every cropped region). Both a single grid and
-        a list of grids are accepted. Each word whose center falls inside a cell polygon is assigned to (at most)
-        one cell, across all tables, and flagged so it can be removed from the regular `blocks` output. Words
-        are joined per cell in reading order (top to bottom, then left to right).
-
         Args:
             boxes: word boxes of the page, of shape (N, 4) or (N, 4, 2), in relative coordinates
             word_preds: list of (text, confidence) for each of the N words
@@ -382,6 +429,13 @@ class DocumentBuilder(NestedObject):
         # Geometry format follows the page's word geometry: straight 2-point boxes when the word boxes are
         # (N, 4), 4-point polygons when they are (N, 4, 2).
         straight = boxes.ndim != 3
+        # Rotation-invariant word heights (left edge length for polygons), used to cluster cell words into rows
+        if num_words == 0:
+            word_heights = np.empty(0)
+        elif straight:
+            word_heights = boxes[:, 3] - boxes[:, 1]
+        else:
+            word_heights = np.linalg.norm(boxes[:, 3] - boxes[:, 0], axis=1)
 
         tables_out: list[Table] = []
         for table_dict in table_dicts:
@@ -389,25 +443,68 @@ class DocumentBuilder(NestedObject):
             if len(cells) == 0:
                 continue
             cell_polys = [self._as_cell_polygon(cell["geometry"]) for cell in cells]
+            polys_arr = np.stack(cell_polys)  # (C, 4, 2), vertices ordered TL, TR, BR, BL
 
-            # Assign each (still unassigned) word to at most one cell of this table: the first cell (in cell
-            # order) whose polygon contains the word center
+            # Word centers used to order words *inside* a cell. On a rotated table the words of a row do not
+            # share an image-space y coordinate, so a plain (y, x) sort scrambles them; order along the table's
+            # own axes instead by de-skewing the centers with the table angle (median of the cell top edges).
+            order_centers = centers
+            if not straight and centers.shape[0] > 0:
+                top_edges = polys_arr[:, 1] - polys_arr[:, 0]  # TR - TL
+                angle = float(np.median(np.arctan2(top_edges[:, 1], top_edges[:, 0])))
+                cos_a, sin_a = np.cos(-angle), np.sin(-angle)
+                pivot = centers.mean(axis=0)
+                shifted = centers - pivot
+                order_centers = np.stack(
+                    [
+                        pivot[0] + shifted[:, 0] * cos_a - shifted[:, 1] * sin_a,
+                        pivot[1] + shifted[:, 0] * sin_a + shifted[:, 1] * cos_a,
+                    ],
+                    axis=1,
+                )
+
+            # Assign each (still unassigned) word to at most one cell of this table
             cell_word_idcs: list[list[int]] = [[] for _ in cells]
             free_idcs = np.flatnonzero(~consumed)
-            if free_idcs.size > 0 and len(cell_polys) > 0:
-                inside = self._points_in_polygons(centers[free_idcs], np.stack(cell_polys))  # (F, C)
-                first_cell = np.where(inside.any(axis=1), inside.argmax(axis=1), -1)
+            if free_idcs.size > 0:
+                # The first cell (in cell order) whose polygon contains the word center
+                inside = self._points_in_polygons(centers[free_idcs], polys_arr)  # (F, C)
+                assigned = inside.any(axis=1)
+                first_cell = np.where(assigned, inside.argmax(axis=1), -1)
                 for w_idx, c_idx in zip(free_idcs, first_cell):
                     if c_idx >= 0:
                         cell_word_idcs[c_idx].append(int(w_idx))
                         consumed[w_idx] = True
 
+                # Words that landed just outside every cell (detection / cell imprecision) but still
+                # inside the table region are attached to the nearest cell, so table text is not dropped into
+                # the body. The capture radius is bounded by the cell size to avoid pulling in body words.
+                leftover = free_idcs[~assigned]
+                if leftover.size > 0:
+                    tx0, ty0 = polys_arr[..., 0].min(), polys_arr[..., 1].min()
+                    tx1, ty1 = polys_arr[..., 0].max(), polys_arr[..., 1].max()
+                    cell_centers = polys_arr.mean(axis=1)  # (C, 2)
+                    cell_sizes = np.linalg.norm(polys_arr[:, 2] - polys_arr[:, 0], axis=1)  # TL->BR diagonal
+                    max_dist = 0.5 * float(np.median(cell_sizes))
+                    in_region = (
+                        (centers[leftover, 0] >= tx0)
+                        & (centers[leftover, 0] <= tx1)
+                        & (centers[leftover, 1] >= ty0)
+                        & (centers[leftover, 1] <= ty1)
+                    )
+                    for w_idx in leftover[in_region]:
+                        dists = np.linalg.norm(cell_centers - centers[w_idx], axis=1)
+                        nearest = int(dists.argmin())
+                        if dists[nearest] <= max_dist:
+                            cell_word_idcs[nearest].append(int(w_idx))
+                            consumed[w_idx] = True
+
             # Build the cells
             table_cells: list[TableCell] = []
             for cell, poly, w_idcs in zip(cells, cell_polys, cell_word_idcs):
                 if len(w_idcs) > 0:
-                    # Reading order inside the cell: top to bottom, then left to right
-                    ordered = sorted(w_idcs, key=lambda i: (round(float(centers[i][1]), 3), float(centers[i][0])))
+                    # Reading order inside the cell: rows top to bottom, words left to right (table axes)
+                    ordered = self._order_cell_words(w_idcs, order_centers, word_heights)
                     value = " ".join(word_preds[i][0] for i in ordered)
                     confidence = float(np.mean([word_preds[i][1] for i in ordered]))
                 else:
@@ -459,6 +556,7 @@ class DocumentBuilder(NestedObject):
         objectness_scores: np.ndarray,
         word_preds: list[tuple[str, float]],
         crop_orientations: list[dict[str, Any]],
+        shape: tuple[int, int] | None = None,
     ) -> list[Block]:
         """Gather independent words in structured blocks
 
@@ -468,6 +566,8 @@ class DocumentBuilder(NestedObject):
             word_preds: list of all detected words of the page, of shape N
             crop_orientations: list of dictoinaries containing
                 the general orientation (orientations + confidences) of the crops
+            shape: the page dimensions (height, width), used to de-skew rotated pages exactly when
+                resolving lines
 
         Returns:
             list of block elements
@@ -481,7 +581,7 @@ class DocumentBuilder(NestedObject):
         # Decide whether we try to form lines
         _boxes = boxes
         if self.resolve_lines:
-            lines = self._resolve_lines(_boxes if _boxes.ndim == 3 else _boxes[:, :4])
+            lines = self._resolve_lines(_boxes if _boxes.ndim == 3 else _boxes[:, :4], shape)
             # Decide whether we try to form blocks
             if self.resolve_blocks and len(lines) > 1:
                 _blocks = self._resolve_blocks(_boxes if _boxes.ndim == 3 else _boxes[:, :4], lines)
@@ -489,7 +589,7 @@ class DocumentBuilder(NestedObject):
                 _blocks = [lines]
         else:
             # Sort bounding boxes, one line for all boxes, one block for the line
-            lines = [self._sort_boxes(_boxes if _boxes.ndim == 3 else _boxes[:, :4])[0]]  # type: ignore[list-item]
+            lines = [self._sort_boxes(_boxes if _boxes.ndim == 3 else _boxes[:, :4], shape)[0]]  # type: ignore[list-item]
             _blocks = [lines]
 
         blocks = [
@@ -517,11 +617,60 @@ class DocumentBuilder(NestedObject):
 
         return blocks
 
+    def _sort_blocks_reading_order(
+        self,
+        blocks: list[Block],
+        word_preds: list[tuple[str, float]],
+        page_regions: dict[str, Any] | None,
+        language: dict[str, Any] | None,
+        dimensions: tuple[int, int],
+        word_boxes: np.ndarray | None = None,
+    ) -> list[Block]:
+        """Sort the blocks of a page in reading order.
+
+        Args:
+            blocks: the blocks of the page
+            word_preds: list of (text, confidence) for the words of the page, used to infer the reading
+                direction
+            page_regions: the layout prediction of the page (used to position the page furniture), or None
+            language: the language prediction of the page (used as a direction hint), or None
+            dimensions: the page dimensions (height, width), used to de-skew rotated pages for ordering
+            word_boxes: the word geometries of the page ((N, 4, 2) on rotated pages), used as the angle
+                source for the de-skew since they carry the detection model's true orientation
+
+        Returns:
+            the blocks sorted in reading order
+        """
+        if len(blocks) <= 1:
+            return blocks
+        region_geoms: list[Any] = []
+        labels = None
+        if page_regions is not None and len(page_regions.get("boxes", [])) > 0:
+            class_names = page_regions.get("class_names") or []
+            if len(class_names) == len(page_regions["boxes"]):
+                region_geoms = list(page_regions["boxes"])
+        # On rotated pages, order in a de-skewed frame (the built blocks keep their original geometry); the
+        # page angle is estimated from the word polygons, which carry the detection model's true orientation
+        angle_geoms = list(word_boxes) if word_boxes is not None and word_boxes.ndim == 3 else None
+        geoms, region_geoms = deskew_reading_geometries(
+            [block.geometry for block in blocks], region_geoms, page_shape=dimensions, angle_geoms=angle_geoms
+        )
+        if page_regions is not None and len(region_geoms) > 0:
+            labels = assign_layout_labels(geoms, region_geoms, page_regions["class_names"])
+        order = ReadingOrderPredictor()(
+            geoms,
+            texts=[text for text, _ in word_preds],
+            labels=labels,
+            language=language.get("value") if isinstance(language, dict) else None,
+        )
+        return [blocks[idx] for idx in order]
+
     def extra_repr(self) -> str:
         return (
             f"resolve_lines={self.resolve_lines}, resolve_blocks={self.resolve_blocks}, "
             f"paragraph_break={self.paragraph_break}, "
-            f"export_as_straight_boxes={self.export_as_straight_boxes}"
+            f"export_as_straight_boxes={self.export_as_straight_boxes}, "
+            f"keep_reading_order={self.keep_reading_order}"
         )
 
     def __call__(
@@ -614,15 +763,22 @@ class DocumentBuilder(NestedObject):
                 word_preds = [wp for wp, k in zip(word_preds, keep) if k]
                 word_crop_orientations = [co for co, k in zip(word_crop_orientations, keep) if k]
 
+            page_blocks = self._build_blocks(
+                page_boxes,
+                loc_scores,
+                word_preds,
+                word_crop_orientations,
+                shape,
+            )
+            if self.keep_reading_order:
+                page_blocks = self._sort_blocks_reading_order(
+                    page_blocks, word_preds, page_regions, language, shape, page_boxes
+                )
+
             _pages.append(
                 Page(
                     page,
-                    self._build_blocks(
-                        page_boxes,
-                        loc_scores,
-                        word_preds,
-                        word_crop_orientations,
-                    ),
+                    page_blocks,
                     _idx,
                     shape,
                     orientation,
@@ -644,6 +800,11 @@ class KIEDocumentBuilder(DocumentBuilder):
         paragraph_break: relative length of the minimum space separating paragraphs
         export_as_straight_boxes: if True, force straight boxes in the export (fit a rectangle
             box to all rotated boxes). Else, keep the boxes format unchanged, no matter what it is.
+        keep_reading_order: if True, sort the blocks of every page in reading order (cf.
+            :mod:`doctr.models.reading_order`). The reading direction is inferred from the recognized text and
+            the layout regions, when available, are used to place the page furniture. Best combined with
+            `resolve_blocks=True`. The reading-order-aware exports (e.g. `Document.export_as_markdown`)
+            apply reading order regardless of this flag.
     """
 
     def __call__(  # type: ignore[override]
@@ -714,6 +875,7 @@ class KIEDocumentBuilder(DocumentBuilder):
                         loc_scores[k],
                         word_preds[k],
                         word_crop_orientations[k],
+                        shape,
                     )
                     for k in page_boxes.keys()
                 },
@@ -745,6 +907,7 @@ class KIEDocumentBuilder(DocumentBuilder):
         objectness_scores: np.ndarray,
         word_preds: list[tuple[str, float]],
         crop_orientations: list[dict[str, Any]],
+        shape: tuple[int, int] | None = None,
     ) -> list[Prediction]:
         """Gather independent words in structured blocks
 
@@ -753,6 +916,7 @@ class KIEDocumentBuilder(DocumentBuilder):
             objectness_scores: objectness scores of all detected words of the page
             word_preds: list of all detected words of the page, of shape N
             crop_orientations: list of orientations for each word crop
+            shape: the page dimensions (height, width), used to de-skew rotated pages exactly
 
         Returns:
             list of block elements
@@ -765,7 +929,7 @@ class KIEDocumentBuilder(DocumentBuilder):
 
         # Decide whether we try to form lines
         _boxes = boxes
-        idxs, _ = self._sort_boxes(_boxes if _boxes.ndim == 3 else _boxes[:, :4])
+        idxs, _ = self._sort_boxes(_boxes if _boxes.ndim == 3 else _boxes[:, :4], shape)
         predictions = [
             Prediction(
                 value=word_preds[idx][0],

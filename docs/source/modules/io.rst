@@ -60,6 +60,10 @@ A Page is a collection of Blocks that were on the same physical page.
 .. autoclass:: Page
 
    .. automethod:: show
+   .. automethod:: items_in_reading_order
+   .. automethod:: export_as_markdown
+   .. automethod:: export_as_asciidoc
+   .. automethod:: export_as
 
 
 KIEPage
@@ -71,6 +75,9 @@ semantic class rather than by spatial layout.
 .. autoclass:: KIEPage
 
    .. automethod:: show
+   .. automethod:: export_as_markdown
+   .. automethod:: export_as_asciidoc
+   .. automethod:: export_as
 
 
 Document
@@ -81,6 +88,9 @@ A Document is a collection of Pages.
 .. autoclass:: Document
 
    .. automethod:: show
+   .. automethod:: export_as_markdown
+   .. automethod:: export_as_asciidoc
+   .. automethod:: export_as
 
 
 KIEDocument
@@ -117,3 +127,29 @@ High-performance file reading and conversion to processable structured data.
    .. automethod:: from_url
 
    .. automethod:: from_images
+
+
+.. _reading_order:
+
+Reading order
+-------------
+
+The reading-order-aware export of a :class:`Document` / :class:`Page` to Markdown or AsciiDoc is available
+through the ``export_as_markdown`` / ``export_as_asciidoc`` / ``export_as`` methods documented above, which
+delegate to the exporters of :mod:`doctr.io.exporters` (which also carries the whole export surface of the
+elements — ``render``, ``export_as_xml``, ``export_as_html`` and the ``export_as`` dispatcher — through
+mixins, keeping :mod:`doctr.io.elements` focused on the document structure). The underlying ordering
+primitives live in :mod:`doctr.models.reading_order`.
+
+.. currentmodule:: doctr.io
+
+.. autoclass:: MarkdownExporter
+    :members: export_page, export_kie_page, export_document
+
+.. autoclass:: AsciiDocExporter
+    :members: export_page, export_kie_page, export_document
+
+.. autoclass:: HTMLExporter
+    :members: export_page, export_kie_page, export_document
+
+.. autofunction:: doctr.io.exporters.page_reading_order
