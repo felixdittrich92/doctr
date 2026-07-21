@@ -7,6 +7,12 @@
 
 **Optical Character Recognition made seamless & accessible to anyone, powered by PyTorch**
 
+## Project responsibility
+
+**docTR** was originally created by [Mindee](https://mindee.com). It is now actively developed and maintained by [t2k GmbH](https://www.text2knowledge.de/de).
+
+[![Need help solving a complex use case?](https://github.com/mindee/doctr/raw/main/docs/images/doctr-need-help.png)](https://www.text2knowledge.de/de)
+
 What you can expect from this repository:
 
 - efficient ways to parse textual information (localize and identify each word) from your documents
@@ -146,16 +152,6 @@ for class_name in predictions.keys():
 ```
 
 The KIE predictor results per page are in a dictionary format with each key representing a class name and it's value are the predictions for that class.
-
-### docTR has received support from Mindee. It is now actively being developed by [t2k GmbH](https://www.text2knowledge.de/de)
-
-[![Bad OCR test detection image asking the developer if they need help](https://github.com/mindee/doctr/raw/main/docs/images/doctr-need-help.png)](https://www.text2knowledge.de/de/portfolio/doctr-on-prem-ocr)
-
-
-This project is supported by [t2k GmbH](https://www.text2knowledge.de/de),
-<p align="center">
-  <img src="https://github.com/mindee/doctr/raw/main/docs/images/t2k_logo.png" width="40%">
-</p>
 
 ## Installation
 
@@ -364,6 +360,22 @@ If you wish to cite this project, feel free to use this [BibTeX](http://www.bibt
     howpublished = {\url{https://github.com/mindee/doctr}}
 }
 ```
+
+## Custom Development and Support
+
+[t2k GmbH](https://www.text2knowledge.de/de) offers professional services around docTR : whether you are building a product or contributing to the open-source project.
+
+### For organizations
+
+Interested in docTR and want to develop, implement, or ship your own solution? t2k can help with:
+
+- **Custom OCR development** : individual detection, recognition, and pipeline work built on docTR
+- **Project implementation** : turning your ideas into production-ready docTR integrations
+- **Technical consulting** : architecture, deployment, and integration guidance
+- **Ongoing development** : feature extensions and implementation support tailored to your use case
+- **Workshops & advisory** : verbal consulting, hands-on sessions, and recommendations for working with docTR
+
+Contact [info@text2knowledge.de](mailto:info@text2knowledge.de) or visit our [home page](https://www.text2knowledge.de) to discuss your project.
 
 ## Contributing
 
