@@ -768,3 +768,66 @@ def test_resolve_lines_small_skew_portrait():
         lines = doc_builder._resolve_lines(polys, (height, width))
         assert len(lines) == 14, f"{len(lines)} lines at {deg} deg"
         assert all(line == [r * 10 + c for c in range(10)] for r, line in enumerate(lines))
+
+
+def test_resolve_lines_adaptive_gutter_split():
+    # Two-column layout whose gutter (0.025) is narrower than the default paragraph_break (0.035) but
+    # much wider than the inter-word spacing (0.005): the adaptive break distance must split the lines
+    # at the gutter instead of merging them across columns
+    doc_builder = builder.DocumentBuilder()
+    boxes = []
+    for row in range(4):
+        y0, y1 = 0.1 + row * 0.05, 0.12 + row * 0.05
+        for col_x in (0.10, 0.475):  # right column starts 0.025 after the left one ends
+            x = col_x
+            for _ in range(5):
+                boxes.append([x, y0, x + 0.065, y1])
+                x += 0.07  # 0.005 gap between words
+    boxes = np.asarray(boxes)
+    lines = doc_builder._resolve_lines(boxes, (1000, 1000))
+    for line in lines:
+        xs = boxes[line, 0]
+        assert xs.max() - xs.min() < 0.3, "line merged across the column gutter"
+    assert len(lines) == 8
+
+    # Sparse page whose regular word gaps (0.03) stay below the default break: the adaptive distance is
+    # capped by `paragraph_break`, so those lines are not shattered
+    sparse = []
+    for row in range(3):
+        y0, y1 = 0.2 + row * 0.2, 0.26 + row * 0.2
+        x = 0.1
+        for _ in range(6):
+            sparse.append([x, y0, x + 0.08, y1])
+            x += 0.11  # 0.03 gap
+    lines = doc_builder._resolve_lines(np.asarray(sparse), (500, 640))
+    assert len(lines) == 3
+
+
+def test_sort_boxes_mixed_polygon_geometries():
+    # On rotated pages, detectors can output a mix of properly rotated polygons and axis-aligned
+    # enclosing boxes. The axis-aligned ones carry no rotation to remove: they must be re-positioned
+    # but keep their shape, since tilting them would inflate their extent and break the line grouping
+    height, width = 1000, 800
+    angle = np.deg2rad(15)
+    rot = np.array([[np.cos(angle), np.sin(angle)], [-np.sin(angle), np.cos(angle)]])
+    center = np.array([width / 2, height / 2])
+    polys = []
+    for k in range(8):
+        x0, y0 = 100 + k * 70, 300
+        pts = np.array([[x0, y0], [x0 + 60, y0], [x0 + 60, y0 + 15], [x0, y0 + 15]], float)
+        polys.append((pts - center) @ rot.T + center)
+    aabb_heights = []
+    for k in (2, 5):  # replace some polygons by their axis-aligned enclosing box
+        p = polys[k]
+        polys[k] = np.array([
+            [p[:, 0].min(), p[:, 1].min()],
+            [p[:, 0].max(), p[:, 1].min()],
+            [p[:, 0].max(), p[:, 1].max()],
+            [p[:, 0].min(), p[:, 1].max()],
+        ])
+        aabb_heights.append((p[:, 1].max() - p[:, 1].min()) / height)
+    polys = np.stack(polys) / np.array([width, height])
+    _, straight = builder.DocumentBuilder._sort_boxes(polys.astype(np.float32), (height, width))
+    heights = straight[:, 3] - straight[:, 1]
+    # the axis-aligned boxes must not be inflated beyond their own extent by the de-skew
+    assert float(heights.max()) <= max(aabb_heights) + 1e-3

@@ -85,31 +85,48 @@ class DocumentBuilder(NestedObject):
         """
         if boxes.ndim == 3:
             height, width = shape if shape is not None else (1024, 1024)
+            scale = np.array([width, height], dtype=boxes.dtype)
             # Line grouping is sensitive to skew as soon as the drift along a line approaches the line
             # height (about 1 degree for a page-wide line), hence the low rotation threshold
-            angle = estimate_page_angle(boxes * np.array([width, height], dtype=boxes.dtype))
-            boxes = rotate_boxes(
+            angle = estimate_page_angle(boxes * scale)
+            rotated = rotate_boxes(
                 loc_preds=boxes,
                 angle=-angle,
                 orig_shape=(height, width),
                 min_angle=1.0,
             )
-            boxes = np.concatenate((boxes.min(1), boxes.max(1)), -1)
+            # On rotated pages, detectors can output a mix of properly rotated polygons and axis-aligned
+            # enclosing boxes. A box that is not itself rotated carries no rotation to remove: it is
+            # re-positioned in the de-skewed frame but keeps its shape, since rotating an enclosing
+            # axis-aligned box would tilt and inflate it, breaking the line grouping
+            if abs(angle) >= 1.0:
+                edges = (boxes[:, 1] - boxes[:, 0]) * scale
+                own_angle = np.rad2deg(np.arctan2(-edges[:, 1], edges[:, 0]))
+                keep = np.abs(own_angle) < abs(angle) / 2
+                if keep.any():
+                    centers = boxes.mean(axis=1, keepdims=True)
+                    new_centers = rotated.mean(axis=1, keepdims=True)
+                    rotated[keep] = boxes[keep] - centers[keep] + new_centers[keep]
+            boxes = np.concatenate((rotated.min(1), rotated.max(1)), -1)
         med_height = float(np.median(boxes[:, 3] - boxes[:, 1]))
         if not np.isfinite(med_height) or med_height <= 0:
             med_height = 1.0
         return (boxes[:, 0] + 2 * boxes[:, 3] / med_height).argsort(), boxes
 
-    def _resolve_sub_lines(self, boxes: np.ndarray, word_idcs: list[int]) -> list[list[int]]:
+    def _resolve_sub_lines(
+        self, boxes: np.ndarray, word_idcs: list[int], break_dist: float | None = None
+    ) -> list[list[int]]:
         """Split a line in sub_lines
 
         Args:
             boxes: bounding boxes of shape (N, 4)
             word_idcs: list of indexes for the words of the line
+            break_dist: horizontal distance above which the line is split (defaults to `self.paragraph_break`)
 
         Returns:
             A list of (sub-)lines computed from the original line (words)
         """
+        break_dist = self.paragraph_break if break_dist is None else break_dist
         lines = []
         # Sort words horizontally
         word_idcs = [word_idcs[idx] for idx in boxes[word_idcs, 0].argsort().tolist()]
@@ -125,8 +142,8 @@ class DocumentBuilder(NestedObject):
                 prev_box = boxes[sub_line[-1]]
                 # Compute distance between boxes
                 dist = boxes[i, 0] - prev_box[2]
-                # If distance between boxes is lower than paragraph break, same sub-line
-                if dist < self.paragraph_break:
+                # If distance between boxes is lower than the break distance, same sub-line
+                if dist < break_dist:
                     horiz_break = False
 
                 if horiz_break:
@@ -154,7 +171,8 @@ class DocumentBuilder(NestedObject):
         # Compute median for boxes heights
         y_med = np.median(boxes[:, 3] - boxes[:, 1])
 
-        lines = []
+        # Group the words into visual rows
+        rows = []
         words = [idxs[0]]  # Assign the top-left word to the first line
         # Define a mean y-center for the line
         y_center_sum = boxes[idxs[0]][[1, 3]].mean()
@@ -169,18 +187,40 @@ class DocumentBuilder(NestedObject):
                 vert_break = False
 
             if vert_break:
-                # Compute sub-lines (horizontal split)
-                lines.extend(self._resolve_sub_lines(boxes, words))
+                rows.append(words)
                 words = []
                 y_center_sum = 0
 
             words.append(idx)
             y_center_sum += boxes[idx][[1, 3]].mean()
 
-        # Use the remaining words to form the last(s) line(s)
+        # Use the remaining words to form the last row
         if len(words) > 0:
-            # Compute sub-lines (horizontal split)
-            lines.extend(self._resolve_sub_lines(boxes, words))
+            rows.append(words)
+
+        # Split the rows horizontally, using a break distance adapted to the page spacing.
+        gaps = []
+        n_pairs = 0
+        for row in rows:
+            row_sorted = sorted(row, key=lambda i: boxes[i, 0])
+            n_pairs += max(len(row_sorted) - 1, 0)
+            for prev, nxt in zip(row_sorted, row_sorted[1:]):
+                gap = boxes[nxt, 0] - boxes[prev, 2]
+                if gap > 0:
+                    gaps.append(float(gap))
+        # Median word height, converted to width units
+        aspect = (shape[0] / shape[1]) if shape is not None else 1.0
+        floor = float(y_med) * aspect
+        if len(gaps) >= 5 and len(gaps) >= 0.5 * n_pairs:
+            break_dist = min(self.paragraph_break, max(3.0 * float(np.median(gaps)), floor))
+        elif n_pairs >= 5:
+            break_dist = min(self.paragraph_break, floor)
+        else:
+            break_dist = self.paragraph_break
+
+        lines = []
+        for row in rows:
+            lines.extend(self._resolve_sub_lines(boxes, row, break_dist))
 
         return lines
 
