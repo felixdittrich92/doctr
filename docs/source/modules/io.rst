@@ -63,6 +63,10 @@ A Page is a collection of Blocks that were on the same physical page.
    .. automethod:: items_in_reading_order
    .. automethod:: export_as_markdown
    .. automethod:: export_as_asciidoc
+   .. automethod:: export_as_html
+   .. automethod:: export_as_xml
+   .. automethod:: export
+   .. automethod:: render
    .. automethod:: export_as
 
 
@@ -77,6 +81,10 @@ semantic class rather than by spatial layout.
    .. automethod:: show
    .. automethod:: export_as_markdown
    .. automethod:: export_as_asciidoc
+   .. automethod:: export_as_html
+   .. automethod:: export_as_xml
+   .. automethod:: export
+   .. automethod:: render
    .. automethod:: export_as
 
 
@@ -90,6 +98,10 @@ A Document is a collection of Pages.
    .. automethod:: show
    .. automethod:: export_as_markdown
    .. automethod:: export_as_asciidoc
+   .. automethod:: export_as_xml
+   .. automethod:: export_as_html
+   .. automethod:: export
+   .. automethod:: render
    .. automethod:: export_as
 
 
@@ -134,12 +146,10 @@ High-performance file reading and conversion to processable structured data.
 Reading order
 -------------
 
-The reading-order-aware export of a :class:`Document` / :class:`Page` to Markdown or AsciiDoc is available
-through the ``export_as_markdown`` / ``export_as_asciidoc`` / ``export_as`` methods documented above, which
-delegate to the exporters of :mod:`doctr.io.exporters` (which also carries the whole export surface of the
-elements — ``render``, ``export_as_xml``, ``export_as_html`` and the ``export_as`` dispatcher — through
-mixins, keeping :mod:`doctr.io.elements` focused on the document structure). The underlying ordering
-primitives live in :mod:`doctr.models.reading_order`.
+The reading-order-aware export of a :class:`Document` / :class:`Page` to Markdown, AsciiDoc is available
+through the ``export_as_markdown`` / ``export_as_asciidoc`` /  ``export_as_html`` / ``export_as_xml`` / ``export_as`` / ``export`` / ``render`` methods documented above, which
+delegate to the exporters of :mod:`doctr.io.exporters`.
+The underlying ordering primitives live in :mod:`doctr.models.reading_order`.
 
 .. currentmodule:: doctr.io
 

@@ -86,8 +86,6 @@ class DocumentBuilder(NestedObject):
         if boxes.ndim == 3:
             height, width = shape if shape is not None else (1024, 1024)
             scale = np.array([width, height], dtype=boxes.dtype)
-            # Line grouping is sensitive to skew as soon as the drift along a line approaches the line
-            # height (about 1 degree for a page-wide line), hence the low rotation threshold
             angle = estimate_page_angle(boxes * scale)
             rotated = rotate_boxes(
                 loc_preds=boxes,
@@ -96,9 +94,7 @@ class DocumentBuilder(NestedObject):
                 min_angle=1.0,
             )
             # On rotated pages, detectors can output a mix of properly rotated polygons and axis-aligned
-            # enclosing boxes. A box that is not itself rotated carries no rotation to remove: it is
-            # re-positioned in the de-skewed frame but keeps its shape, since rotating an enclosing
-            # axis-aligned box would tilt and inflate it, breaking the line grouping
+            # enclosing boxes. A box that is not itself rotated carries no rotation to remove
             if abs(angle) >= 1.0:
                 edges = (boxes[:, 1] - boxes[:, 0]) * scale
                 own_angle = np.rad2deg(np.arctan2(-edges[:, 1], edges[:, 0]))
@@ -348,9 +344,6 @@ class DocumentBuilder(NestedObject):
         if arr.ndim == 1:  # straight box (xmin, ymin, xmax, ymax)
             x0, y0, x1, y1 = arr
             return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float32)
-        # Normalize the vertex order (TL, TR, BR, BL): the containment test requires a non self-intersecting
-        # cyclic polygon and the table angle estimation reads the top edge, so the cell polygon must not
-        # depend on the vertex convention of the table model
         return order_points(arr.reshape(-1, 2))
 
     @staticmethod
@@ -485,9 +478,7 @@ class DocumentBuilder(NestedObject):
             cell_polys = [self._as_cell_polygon(cell["geometry"]) for cell in cells]
             polys_arr = np.stack(cell_polys)  # (C, 4, 2), vertices ordered TL, TR, BR, BL
 
-            # Word centers used to order words *inside* a cell. On a rotated table the words of a row do not
-            # share an image-space y coordinate, so a plain (y, x) sort scrambles them; order along the table's
-            # own axes instead by de-skewing the centers with the table angle (median of the cell top edges).
+            # Order along the table's own axes instead by de-skewing the centers with the table angle
             order_centers = centers
             if not straight and centers.shape[0] > 0:
                 top_edges = polys_arr[:, 1] - polys_arr[:, 0]  # TR - TL
@@ -516,9 +507,9 @@ class DocumentBuilder(NestedObject):
                         cell_word_idcs[c_idx].append(int(w_idx))
                         consumed[w_idx] = True
 
-                # Words that landed just outside every cell (detection / cell imprecision) but still
-                # inside the table region are attached to the nearest cell, so table text is not dropped into
-                # the body. The capture radius is bounded by the cell size to avoid pulling in body words.
+                # Words that landed just outside every cell but still inside the table region are attached
+                # to the nearest cell, so table text is not dropped into the body.
+                # The capture radius is bounded by the cell size to avoid pulling in body words.
                 leftover = free_idcs[~assigned]
                 if leftover.size > 0:
                     tx0, ty0 = polys_arr[..., 0].min(), polys_arr[..., 1].min()
@@ -689,8 +680,7 @@ class DocumentBuilder(NestedObject):
             class_names = page_regions.get("class_names") or []
             if len(class_names) == len(page_regions["boxes"]):
                 region_geoms = list(page_regions["boxes"])
-        # On rotated pages, order in a de-skewed frame (the built blocks keep their original geometry); the
-        # page angle is estimated from the word polygons, which carry the detection model's true orientation
+        # On rotated pages, order in a de-skewed frame
         angle_geoms = list(word_boxes) if word_boxes is not None and word_boxes.ndim == 3 else None
         geoms, region_geoms = deskew_reading_geometries(
             [block.geometry for block in blocks], region_geoms, page_shape=dimensions, angle_geoms=angle_geoms
