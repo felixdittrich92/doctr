@@ -3,7 +3,7 @@ import pytest
 
 from doctr.file_utils import CLASS_NAME
 from doctr.io import elements
-from doctr.io.exporters import AsciiDocExporter, HTMLExporter, MarkdownExporter, page_reading_order
+from doctr.io.exporters import AsciiDocExporter, HTMLExporter, MarkdownExporter, XMLExporter, page_reading_order
 
 
 def _word_at(text, x0, y0, x1, y1):
@@ -384,3 +384,50 @@ def test_export_mixins_carry_full_api():
         page.export_as(fmt)
     with pytest.raises(ValueError):
         page.export_as("pptx")
+
+
+def test_page_render_keeps_reading_order():
+    # Blocks provided out of order: render must emit them top-to-bottom, left column before right
+    left = elements.Block(
+        lines=[_line_at("left top", 0.08, 0.1, 0.45, 0.13), _line_at("left low", 0.08, 0.2, 0.45, 0.23)]
+    )
+    right = elements.Block(
+        lines=[_line_at("right top", 0.55, 0.1, 0.92, 0.13), _line_at("right low", 0.55, 0.2, 0.92, 0.23)]
+    )
+    page = elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [right, left], 0, (1000, 800))
+    assert page.render() == "left top\nleft low\n\nright top\nright low"
+    # Single-block and empty pages are unaffected
+    assert elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [left], 0, (1000, 800)).render() == "left top\nleft low"
+    assert elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [], 0, (1000, 800)).render() == ""
+
+
+def test_kie_page_render_keeps_reading_order():
+    predictions = {
+        CLASS_NAME: [
+            elements.Prediction("second", 0.9, ((0.1, 0.5), (0.9, 0.6)), 0.9, {"value": 0, "confidence": None}),
+            elements.Prediction("first", 0.9, ((0.1, 0.1), (0.9, 0.2)), 0.9, {"value": 0, "confidence": None}),
+        ]
+    }
+    page = elements.KIEPage(np.zeros((10, 10, 3), dtype=np.uint8), predictions, 0, (1000, 800))
+    assert page.render() == f"{CLASS_NAME}: first\n\n{CLASS_NAME}: second"
+
+
+def test_xml_exporter_class():
+    from xml.etree import ElementTree as ET
+
+    page = _reading_order_page()
+    xml_bytes, tree = XMLExporter().export_page(page)
+    assert isinstance(xml_bytes, bytes) and isinstance(tree, ET.ElementTree)
+    # The mixin method delegates to the exporter class, so the output is identical
+    assert page.export_as_xml()[0] == xml_bytes
+    assert page.export_as("xml")[0] == xml_bytes
+
+    predictions = {
+        CLASS_NAME: [elements.Prediction("hi", 0.9, ((0.1, 0.1), (0.9, 0.2)), 0.9, {"value": 0, "confidence": None})]
+    }
+    kie = elements.KIEPage(np.zeros((10, 10, 3), dtype=np.uint8), predictions, 0, (1000, 800))
+    assert kie.export_as_xml()[0] == XMLExporter().export_kie_page(kie)[0]
+
+    doc = elements.Document([page, page])
+    doc_xml = XMLExporter().export_document(doc)
+    assert len(doc_xml) == 2 and doc.export_as_xml()[0][0] == doc_xml[0][0]

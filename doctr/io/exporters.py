@@ -24,6 +24,7 @@ __all__ = [
     "KIEPageExportsMixin",
     "MarkdownExporter",
     "PageExportsMixin",
+    "XMLExporter",
     "page_reading_order",
 ]
 
@@ -377,7 +378,7 @@ class HTMLExporter(_PageTextExporter):
     paragraphs to `<p>` (with `<br>` between the visual lines of a paragraph).
 
     >>> from doctr.io import HTMLExporter
-    >>> html = HTMLExporter().export_page(page)  # doctest: +SKIP
+    >>> html = HTMLExporter().export_page(page)
     """
 
     headings: ClassVar[dict[str, str]] = {"title": "h1", "section_header": "h2"}
@@ -499,45 +500,20 @@ def _hocr_bbox(geometry: BoundingBox, width: int, height: int) -> str:
     )
 
 
-class PageExportsMixin:
-    """Export functionality of a :class:`~doctr.io.elements.Page`"""
+class XMLExporter:
+    """hOCR (XML) exporter for pages, KIE pages and documents.
+    See the hOCR 1.2 specification for the XML convention: https://github.com/kba/hocr-spec/blob/master/1.2/spec.md
 
-    if TYPE_CHECKING:  # structural attributes provided by the element class
-        page: np.ndarray
-        blocks: list["Block"]
-        page_idx: int
-        dimensions: tuple[int, int]
-        orientation: dict[str, Any]
-        language: dict[str, Any]
-        layout: list[Any]
-        tables: list["Table"]
+    >>> from doctr.io import XMLExporter
+    >>> xml_bytes, xml_tree = XMLExporter().export_page(page)
+    """
 
-        def export(self) -> dict[str, Any]: ...
+    ocr_capabilities: ClassVar[str] = "ocr_page ocr_carea ocr_par ocr_line ocrx_word"
 
-    def render(self, block_break: str = "\n\n") -> str:
-        """Renders the full text of the element"""
-        return block_break.join(b.render() for b in self.blocks)
-
-    def export_as_xml(self, file_title: str = "docTR - XML export (hOCR)") -> tuple[bytes, ET.ElementTree]:
-        """Export the page as XML (hOCR-format)
-        convention: https://github.com/kba/hocr-spec/blob/master/1.2/spec.md
-
-        Args:
-            file_title: the title of the XML file
-
-        Returns:
-            a tuple of the XML byte string, and its ElementTree
-        """
-        p_idx = self.page_idx
-        block_count: int = 1
-        line_count: int = 1
-        word_count: int = 1
-        height, width = self.dimensions
-        language = _resolve_hocr_language(self.language)
-        # Create the XML root element
-        page_hocr = ETElement("html", attrib={"xmlns": "http://www.w3.org/1999/xhtml", "xml:lang": str(language)})
-        # Create the header / SubElements of the root element
-        head = SubElement(page_hocr, "head")
+    def _new_document(self, file_title: str, language: str) -> tuple[ETElement, ETElement]:
+        """Create the hOCR root element with its <head>, returning the root and its <body> element."""
+        root = ETElement("html", attrib={"xmlns": "http://www.w3.org/1999/xhtml", "xml:lang": str(language)})
+        head = SubElement(root, "head")
         SubElement(head, "title").text = file_title
         SubElement(head, "meta", attrib={"http-equiv": "Content-Type", "content": "text/html; charset=utf-8"})
         SubElement(
@@ -545,44 +521,47 @@ class PageExportsMixin:
             "meta",
             attrib={"name": "ocr-system", "content": f"python-doctr {doctr.__version__}"},  # type: ignore[attr-defined]
         )
-        SubElement(
-            head,
-            "meta",
-            attrib={"name": "ocr-capabilities", "content": "ocr_page ocr_carea ocr_par ocr_line ocrx_word"},
-        )
-        # Create the body
-        body = SubElement(page_hocr, "body")
+        SubElement(head, "meta", attrib={"name": "ocr-capabilities", "content": self.ocr_capabilities})
+        return root, SubElement(root, "body")
+
+    def export_page(self, page: "Page", file_title: str = "docTR - XML export (hOCR)") -> tuple[bytes, ET.ElementTree]:
+        """Export a page as hOCR XML.
+
+        Args:
+            page: the page to export
+            file_title: the title of the XML file
+
+        Returns:
+            a tuple of the XML byte string, and its ElementTree
+        """
+        block_count: int = 1
+        line_count: int = 1
+        word_count: int = 1
+        height, width = page.dimensions
+        page_hocr, body = self._new_document(file_title, _resolve_hocr_language(page.language))
         page_div = SubElement(
             body,
             "div",
             attrib={
                 "class": "ocr_page",
-                "id": f"page_{p_idx + 1}",
+                "id": f"page_{page.page_idx + 1}",
                 "title": f"image; bbox 0 0 {width} {height}; ppageno 0",
             },
         )
-        # iterate over the blocks / lines / words and create the XML elements in body line by line with the attributes
-        for block in self.blocks:
+        # iterate over the blocks / lines / words and create the XML elements line by line with the attributes
+        for block in page.blocks:
             if len(block.geometry) != 2:
                 raise TypeError("XML export is only available for straight bounding boxes for now.")
             block_bbox = _hocr_bbox(block.geometry, width, height)  # type: ignore[arg-type]
             block_div = SubElement(
                 page_div,
                 "div",
-                attrib={
-                    "class": "ocr_carea",
-                    "id": f"block_{block_count}",
-                    "title": block_bbox,
-                },
+                attrib={"class": "ocr_carea", "id": f"block_{block_count}", "title": block_bbox},
             )
             paragraph = SubElement(
                 block_div,
                 "p",
-                attrib={
-                    "class": "ocr_par",
-                    "id": f"par_{block_count}",
-                    "title": block_bbox,
-                },
+                attrib={"class": "ocr_par", "id": f"par_{block_count}", "title": block_bbox},
             )
             block_count += 1
             for line in block.lines:
@@ -601,7 +580,6 @@ class PageExportsMixin:
                 )
                 line_count += 1
                 for word in line.words:
-                    conf = word.confidence
                     word_div = SubElement(
                         line_span,
                         "span",
@@ -610,15 +588,155 @@ class PageExportsMixin:
                             "id": f"word_{word_count}",
                             "title": (
                                 f"{_hocr_bbox(word.geometry, width, height)}; "  # type: ignore[arg-type]
-                                f"x_wconf {int(round(conf * 100))}"
+                                f"x_wconf {int(round(word.confidence * 100))}"
                             ),
                         },
                     )
-                    # set the text
                     word_div.text = word.value
                     word_count += 1
+        return ET.tostring(page_hocr, encoding="utf-8", method="xml"), ET.ElementTree(page_hocr)
 
-        return (ET.tostring(page_hocr, encoding="utf-8", method="xml"), ET.ElementTree(page_hocr))
+    def export_kie_page(
+        self, page: "KIEPage", file_title: str = "docTR - XML export (hOCR)"
+    ) -> tuple[bytes, ET.ElementTree]:
+        """Export a KIE page as hOCR XML.
+
+        Args:
+            page: the KIE page to export
+            file_title: the title of the XML file
+
+        Returns:
+            a tuple of the XML byte string, and its ElementTree
+        """
+        prediction_count: int = 1
+        height, width = page.dimensions
+        page_hocr, body = self._new_document(file_title, _resolve_hocr_language(page.language))
+        SubElement(
+            body,
+            "div",
+            attrib={
+                "class": "ocr_page",
+                "id": f"page_{page.page_idx + 1}",
+                "title": f"image; bbox 0 0 {width} {height}; ppageno 0",
+            },
+        )
+        # iterate over the predictions and create the XML elements line by line with the attributes
+        for class_name, predictions in page.predictions.items():
+            for prediction in predictions:
+                if len(prediction.geometry) != 2:
+                    raise TypeError("XML export is only available for straight bounding boxes for now.")
+                prediction_bbox = _hocr_bbox(prediction.geometry, width, height)  # type: ignore[arg-type]
+                prediction_div = SubElement(
+                    body,
+                    "div",
+                    attrib={
+                        "class": "ocr_carea",
+                        "id": f"{class_name}_prediction_{prediction_count}",
+                        "title": prediction_bbox,
+                    },
+                )
+                # NOTE: ocr_par, ocr_line and ocrx_word are the same because the KIE predictions contain only words
+                # This is a workaround to make it PDF/A compatible
+                par_div = SubElement(
+                    prediction_div,
+                    "p",
+                    attrib={
+                        "class": "ocr_par",
+                        "id": f"{class_name}_par_{prediction_count}",
+                        "title": prediction_bbox,
+                    },
+                )
+                line_span = SubElement(
+                    par_div,
+                    "span",
+                    attrib={
+                        "class": "ocr_line",
+                        "id": f"{class_name}_line_{prediction_count}",
+                        "title": f"{prediction_bbox}; baseline 0 0; x_size 0; x_descenders 0; x_ascenders 0",
+                    },
+                )
+                word_div = SubElement(
+                    line_span,
+                    "span",
+                    attrib={
+                        "class": "ocrx_word",
+                        "id": f"{class_name}_word_{prediction_count}",
+                        "title": f"{prediction_bbox}; x_wconf {int(round(prediction.confidence * 100))}",
+                    },
+                )
+                word_div.text = prediction.value
+                prediction_count += 1
+        return ET.tostring(page_hocr, encoding="utf-8", method="xml"), ET.ElementTree(page_hocr)
+
+    def export_document(self, document: Any, **kwargs: Any) -> list[tuple[bytes, ET.ElementTree]]:
+        """Export a document as a list of hOCR pages.
+
+        Args:
+            document: the document to export
+            **kwargs: additional keyword arguments passed to the page export
+
+        Returns:
+            list of tuple of (bytes, ElementTree), one per page
+        """
+        from doctr.io.elements import KIEPage
+
+        return [
+            self.export_kie_page(page, **kwargs) if isinstance(page, KIEPage) else self.export_page(page, **kwargs)
+            for page in document.pages
+        ]
+
+
+class PageExportsMixin:
+    """Export functionality of a :class:`~doctr.io.elements.Page`"""
+
+    if TYPE_CHECKING:  # structural attributes provided by the element class
+        page: np.ndarray
+        blocks: list["Block"]
+        page_idx: int
+        dimensions: tuple[int, int]
+        orientation: dict[str, Any]
+        language: dict[str, Any]
+        layout: list[Any]
+        tables: list["Table"]
+
+        def export(self) -> dict[str, Any]: ...
+
+    def render(self, block_break: str = "\n\n") -> str:
+        """Renders the full text of the page, with its blocks sorted in reading order.
+
+        Args:
+            block_break: the string inserted between two blocks
+
+        Returns:
+            the text of the page, its blocks ordered in reading order
+        """
+        from doctr.models.reading_order import ReadingOrderPredictor
+
+        blocks = self.blocks
+        if len(blocks) > 1:
+            language = self.language.get("value") if isinstance(self.language, dict) else None
+            angle_geoms = [word.geometry for block in blocks for line in block.lines for word in line.words]
+            order = ReadingOrderPredictor()(
+                [block.geometry for block in blocks],
+                texts=[block.render() for block in blocks],
+                language=language,
+                page_shape=self.dimensions,
+                angle_geoms=angle_geoms or None,
+            )
+            blocks = [blocks[idx] for idx in order]
+        return block_break.join(block.render() for block in blocks)
+
+    def export_as_xml(self, file_title: str = "docTR - XML export (hOCR)") -> tuple[bytes, ET.ElementTree]:
+        """Export the page as XML (hOCR-format)
+        convention: https://github.com/kba/hocr-spec/blob/master/1.2/spec.md
+
+        Args:
+            file_title: the title of the XML file
+
+        Returns:
+            a tuple of the XML byte string, and its ElementTree
+        """
+        return XMLExporter().export_page(cast("Page", self), file_title=file_title)
 
     def items_in_reading_order(self, direction: str = "auto") -> list["Block | Table"]:
         """Return the content of the page (blocks & tables) sorted in reading order.
@@ -713,10 +831,31 @@ class KIEPageExportsMixin:
         def export(self) -> dict[str, Any]: ...
 
     def render(self, prediction_break: str = "\n\n") -> str:
-        """Renders the full text of the element"""
-        return prediction_break.join(
-            f"{class_name}: {p.render()}" for class_name, predictions in self.predictions.items() for p in predictions
-        )
+        """Renders the full text of the page, with the predictions of each class sorted in reading order.
+
+        Args:
+            prediction_break: the string inserted between two predictions
+
+        Returns:
+            the text of the page, one section per detection class with its predictions in reading order
+        """
+        from doctr.models.reading_order import ReadingOrderPredictor
+
+        predictor = ReadingOrderPredictor()
+        language = self.language.get("value") if isinstance(self.language, dict) else None
+        parts: list[str] = []
+        for class_name, predictions in self.predictions.items():
+            ordered = predictions
+            if len(ordered) > 1:
+                order = predictor(
+                    [prediction.geometry for prediction in ordered],
+                    texts=[prediction.value for prediction in ordered],
+                    language=language,
+                    page_shape=self.dimensions,
+                )
+                ordered = [ordered[idx] for idx in order]
+            parts.extend(f"{class_name}: {prediction.render()}" for prediction in ordered)
+        return prediction_break.join(parts)
 
     def export_as_xml(self, file_title: str = "docTR - XML export (hOCR)") -> tuple[bytes, ET.ElementTree]:
         """Export the page as XML (hOCR-format)
@@ -728,85 +867,7 @@ class KIEPageExportsMixin:
         Returns:
             a tuple of the XML byte string, and its ElementTree
         """
-        p_idx = self.page_idx
-        prediction_count: int = 1
-        height, width = self.dimensions
-        language = _resolve_hocr_language(self.language)
-        # Create the XML root element
-        page_hocr = ETElement("html", attrib={"xmlns": "http://www.w3.org/1999/xhtml", "xml:lang": str(language)})
-        # Create the header / SubElements of the root element
-        head = SubElement(page_hocr, "head")
-        SubElement(head, "title").text = file_title
-        SubElement(head, "meta", attrib={"http-equiv": "Content-Type", "content": "text/html; charset=utf-8"})
-        SubElement(
-            head,
-            "meta",
-            attrib={"name": "ocr-system", "content": f"python-doctr {doctr.__version__}"},  # type: ignore[attr-defined]
-        )
-        SubElement(
-            head,
-            "meta",
-            attrib={"name": "ocr-capabilities", "content": "ocr_page ocr_carea ocr_par ocr_line ocrx_word"},
-        )
-        # Create the body
-        body = SubElement(page_hocr, "body")
-        SubElement(
-            body,
-            "div",
-            attrib={
-                "class": "ocr_page",
-                "id": f"page_{p_idx + 1}",
-                "title": f"image; bbox 0 0 {width} {height}; ppageno 0",
-            },
-        )
-        # iterate over the blocks / lines / words and create the XML elements in body line by line with the attributes
-        for class_name, predictions in self.predictions.items():
-            for prediction in predictions:
-                if len(prediction.geometry) != 2:
-                    raise TypeError("XML export is only available for straight bounding boxes for now.")
-                prediction_bbox = _hocr_bbox(prediction.geometry, width, height)
-                prediction_div = SubElement(
-                    body,
-                    "div",
-                    attrib={
-                        "class": "ocr_carea",
-                        "id": f"{class_name}_prediction_{prediction_count}",
-                        "title": prediction_bbox,
-                    },
-                )
-                # NOTE: ocr_par, ocr_line and ocrx_word are the same because the KIE predictions contain only words
-                # This is a workaround to make it PDF/A compatible
-                par_div = SubElement(
-                    prediction_div,
-                    "p",
-                    attrib={
-                        "class": "ocr_par",
-                        "id": f"{class_name}_par_{prediction_count}",
-                        "title": prediction_bbox,
-                    },
-                )
-                line_span = SubElement(
-                    par_div,
-                    "span",
-                    attrib={
-                        "class": "ocr_line",
-                        "id": f"{class_name}_line_{prediction_count}",
-                        "title": f"{prediction_bbox}; baseline 0 0; x_size 0; x_descenders 0; x_ascenders 0",
-                    },
-                )
-                word_div = SubElement(
-                    line_span,
-                    "span",
-                    attrib={
-                        "class": "ocrx_word",
-                        "id": f"{class_name}_word_{prediction_count}",
-                        "title": f"{prediction_bbox}; x_wconf {int(round(prediction.confidence * 100))}",
-                    },
-                )
-                word_div.text = prediction.value
-                prediction_count += 1
-
-        return ET.tostring(page_hocr, encoding="utf-8", method="xml"), ET.ElementTree(page_hocr)
+        return XMLExporter().export_kie_page(cast("KIEPage", self), file_title=file_title)
 
     def export_as_markdown(self, direction: str = "auto", escape: bool = True) -> str:
         """Export the KIE page as Markdown, with the predictions of each class sorted in reading order.
@@ -867,16 +928,16 @@ class DocumentExportsMixin:
         """Renders the full text of the element"""
         return page_break.join(p.render() for p in self.pages)
 
-    def export_as_xml(self, **kwargs) -> list[tuple[bytes, ET.ElementTree]]:
+    def export_as_xml(self, **kwargs: Any) -> list[tuple[bytes, ET.ElementTree]]:
         """Export the document as XML (hOCR-format)
 
         Args:
-            **kwargs: additional keyword arguments passed to the Page.export_as_xml method
+            **kwargs: additional keyword arguments passed to the XML page export
 
         Returns:
             list of tuple of (bytes, ElementTree)
         """
-        return [page.export_as_xml(**kwargs) for page in self.pages]
+        return XMLExporter().export_document(self, **kwargs)
 
     def export_as_markdown(self, page_break: str = "\n\n---\n\n", **kwargs: Any) -> str:
         """Export the document as Markdown, with the content of each page sorted in reading order.
