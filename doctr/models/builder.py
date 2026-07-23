@@ -23,7 +23,6 @@ from doctr.io.elements import (
     TableCell,
     Word,
 )
-from doctr.models.reading_order import ReadingOrderPredictor, assign_layout_labels, deskew_reading_geometries
 from doctr.utils.geometry import (
     estimate_page_angle,
     order_points,
@@ -45,11 +44,13 @@ class DocumentBuilder(NestedObject):
         paragraph_break: relative length of the minimum space separating paragraphs
         export_as_straight_boxes: if True, force straight boxes in the export (fit a rectangle
             box to all rotated boxes). Else, keep the boxes format unchanged, no matter what it is.
-        keep_reading_order: if True, sort the blocks of every page in reading order (cf.
-            :mod:`doctr.models.reading_order`). The reading direction is inferred from the recognized text and
-            the layout regions, when available, are used to place the page furniture. Best combined with
-            `resolve_blocks=True`. The reading-order-aware exports (e.g. `Document.export_as_markdown`)
-            apply reading order regardless of this flag.
+        keep_reading_order: if True, arrange the content of every page in reading order (cf.
+            :mod:`doctr.models.reading_order`). The reading direction is inferred from the recognized text.
+            When a layout is available it is always preferred: the text blocks and the page furniture
+            (headers, footers, ...) are taken from the layout regions. This is effective for every
+            combination of `resolve_lines` / `resolve_blocks` (including `resolve_lines=False`, in which
+            case lines are resolved internally only to order the content). The reading-order-aware exports
+            (e.g. `Document.export_as_markdown`) apply reading order regardless of this flag.
     """
 
     def __init__(
@@ -648,52 +649,42 @@ class DocumentBuilder(NestedObject):
 
         return blocks
 
-    def _sort_blocks_reading_order(
-        self,
-        blocks: list[Block],
-        word_preds: list[tuple[str, float]],
-        page_regions: dict[str, Any] | None,
-        language: dict[str, Any] | None,
-        dimensions: tuple[int, int],
-        word_boxes: np.ndarray | None = None,
-    ) -> list[Block]:
-        """Sort the blocks of a page in reading order.
+    @staticmethod
+    def _words_to_boxes(words: list[Word]) -> np.ndarray:
+        """Rebuild a localization array from word geometries (rotated polygons or straight boxes)."""
+        geoms = [np.asarray(word.geometry, dtype=np.float32) for word in words]
+        if len(geoms) > 0 and geoms[0].shape == (4, 2):
+            return np.stack(geoms)  # (N, 4, 2) rotated polygons
+        return np.asarray(
+            [[g[0][0], g[0][1], g[1][0], g[1][1]] for g in geoms], dtype=np.float32
+        )  # (N, 4) straight boxes
+
+    def _apply_reading_order(self, page: Page) -> None:
+        """Arrange the blocks of a page in reading order, in place.
 
         Args:
-            blocks: the blocks of the page
-            word_preds: list of (text, confidence) for the words of the page, used to infer the reading
-                direction
-            page_regions: the layout prediction of the page (used to position the page furniture), or None
-            language: the language prediction of the page (used as a direction hint), or None
-            dimensions: the page dimensions (height, width), used to de-skew rotated pages for ordering
-            word_boxes: the word geometries of the page ((N, 4, 2) on rotated pages), used as the angle
-                source for the de-skew since they carry the detection model's true orientation
-
-        Returns:
-            the blocks sorted in reading order
+            page: the page whose blocks should be reordered in place
         """
-        if len(blocks) <= 1:
-            return blocks
-        region_geoms: list[Any] = []
-        labels = None
-        if page_regions is not None and len(page_regions.get("boxes", [])) > 0:
-            class_names = page_regions.get("class_names") or []
-            if len(class_names) == len(page_regions["boxes"]):
-                region_geoms = list(page_regions["boxes"])
-        # On rotated pages, order in a de-skewed frame
-        angle_geoms = list(word_boxes) if word_boxes is not None and word_boxes.ndim == 3 else None
-        geoms, region_geoms = deskew_reading_geometries(
-            [block.geometry for block in blocks], region_geoms, page_shape=dimensions, angle_geoms=angle_geoms
+        from doctr.io.exporters import page_reading_order
+
+        if not page.blocks:
+            return
+
+        collapse = not self.resolve_lines
+        if collapse:
+            words = [word for block in page.blocks for line in block.lines for word in line.words]
+            if len(words) < 2:
+                return
+            groups = self._resolve_lines(self._words_to_boxes(words), page.dimensions)
+            page.blocks = [Block([Line([words[idx] for idx in group]) for group in groups])]
+
+        items, _, _ = page_reading_order(page)
+        blocks = [item for item in items if isinstance(item, Block)]
+        page.blocks = (
+            [Block(lines=[Line([word for block in blocks for line in block.lines for word in line.words])])]
+            if collapse
+            else blocks
         )
-        if page_regions is not None and len(region_geoms) > 0:
-            labels = assign_layout_labels(geoms, region_geoms, page_regions["class_names"])
-        order = ReadingOrderPredictor()(
-            geoms,
-            texts=[text for text, _ in word_preds],
-            labels=labels,
-            language=language.get("value") if isinstance(language, dict) else None,
-        )
-        return [blocks[idx] for idx in order]
 
     def extra_repr(self) -> str:
         return (
@@ -800,23 +791,20 @@ class DocumentBuilder(NestedObject):
                 word_crop_orientations,
                 shape,
             )
-            if self.keep_reading_order:
-                page_blocks = self._sort_blocks_reading_order(
-                    page_blocks, word_preds, page_regions, language, shape, page_boxes
-                )
-
-            _pages.append(
-                Page(
-                    page,
-                    page_blocks,
-                    _idx,
-                    shape,
-                    orientation,
-                    language,
-                    self._build_layout_elements(page_regions),
-                    page_tables,
-                )
+            _page = Page(
+                page,
+                page_blocks,
+                _idx,
+                shape,
+                orientation,
+                language,
+                self._build_layout_elements(page_regions),
+                page_tables,
             )
+            if self.keep_reading_order:
+                self._apply_reading_order(_page)
+
+            _pages.append(_page)
 
         return Document(_pages)
 
@@ -830,11 +818,10 @@ class KIEDocumentBuilder(DocumentBuilder):
         paragraph_break: relative length of the minimum space separating paragraphs
         export_as_straight_boxes: if True, force straight boxes in the export (fit a rectangle
             box to all rotated boxes). Else, keep the boxes format unchanged, no matter what it is.
-        keep_reading_order: if True, sort the blocks of every page in reading order (cf.
-            :mod:`doctr.models.reading_order`). The reading direction is inferred from the recognized text and
-            the layout regions, when available, are used to place the page furniture. Best combined with
-            `resolve_blocks=True`. The reading-order-aware exports (e.g. `Document.export_as_markdown`)
-            apply reading order regardless of this flag.
+        keep_reading_order: if True, arrange the content of every page in reading order (cf.
+            :mod:`doctr.models.reading_order`). The reading direction is inferred from the recognized text.
+            When a layout is available it is always preferred: the text blocks and the page furniture
+            (headers, footers, ...) are taken from the layout regions.
     """
 
     def __call__(  # type: ignore[override]

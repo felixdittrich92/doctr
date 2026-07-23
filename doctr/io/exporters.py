@@ -702,29 +702,15 @@ class PageExportsMixin:
         def export(self) -> dict[str, Any]: ...
 
     def render(self, block_break: str = "\n\n") -> str:
-        """Renders the full text of the page, with its blocks sorted in reading order.
+        """Renders the full text of the page.
 
         Args:
             block_break: the string inserted between two blocks
 
         Returns:
-            the text of the page, its blocks ordered in reading order
+            the text of the page
         """
-        from doctr.models.reading_order import ReadingOrderPredictor
-
-        blocks = self.blocks
-        if len(blocks) > 1:
-            language = self.language.get("value") if isinstance(self.language, dict) else None
-            angle_geoms = [word.geometry for block in blocks for line in block.lines for word in line.words]
-            order = ReadingOrderPredictor()(
-                [block.geometry for block in blocks],
-                texts=[block.render() for block in blocks],
-                language=language,
-                page_shape=self.dimensions,
-                angle_geoms=angle_geoms or None,
-            )
-            blocks = [blocks[idx] for idx in order]
-        return block_break.join(block.render() for block in blocks)
+        return block_break.join(block.render() for block in self.blocks)
 
     def export_as_xml(self, file_title: str = "docTR - XML export (hOCR)") -> tuple[bytes, ET.ElementTree]:
         """Export the page as XML (hOCR-format)

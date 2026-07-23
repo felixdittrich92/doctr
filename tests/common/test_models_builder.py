@@ -659,3 +659,143 @@ def test_documentbuilder_keep_reading_order_rotated():
         [[{"value": 0, "confidence": None}] * len(words)],
     )
     assert doc.pages[0].render(block_break=" ").split() == ["L0", "L1", "L2", "R0", "R1", "R2"]
+
+
+_FLAG_COMBINATIONS = [
+    (True, True),
+    (True, False),
+    (False, True),
+    (False, False),
+]
+
+
+def _run(doc_builder, boxes, words, regions=None):
+    return doc_builder(
+        [np.zeros((100, 100, 3), dtype=np.uint8)],
+        [np.asarray(boxes, dtype=np.float32)],
+        [np.ones(len(words))],
+        [words],
+        [(100, 100)],
+        [[{"value": 0, "confidence": None}] * len(words)],
+        regions=[regions] if regions is not None else None,
+    ).pages[0]
+
+
+def _two_columns_of_words():
+    # Two columns, three rows each, two words per row; shuffled so the input order is not the reading order
+    cells = []
+    for column, tag in ((0.08, "L"), (0.55, "R")):
+        for row in range(3):
+            y = 0.12 + 0.04 * row
+            cells.append(([column, y, column + 0.15, y + 0.02], f"{tag}{row}a"))
+            cells.append(([column + 0.17, y, column + 0.34, y + 0.02], f"{tag}{row}b"))
+    order = [7, 0, 11, 3, 5, 9, 1, 6, 10, 2, 8, 4]
+    cells = [cells[idx] for idx in order]
+    boxes = [box for box, _ in cells]
+    words = [(text, 0.9) for _, text in cells]
+    expected = "L0a L0b L1a L1b L2a L2b R0a R0b R1a R1b R2a R2b".split()
+    return boxes, words, expected
+
+
+def test_documentbuilder_keep_reading_order_all_flag_combinations():
+    boxes, words, expected = _two_columns_of_words()
+    # two column text regions
+    regions = {
+        "boxes": np.asarray([[0.06, 0.10, 0.45, 0.24], [0.53, 0.10, 0.92, 0.24]]),
+        "class_names": ["Text", "Text"],
+        "scores": [0.9, 0.9],
+    }
+    for resolve_lines, resolve_blocks in _FLAG_COMBINATIONS:
+        for page_regions in (None, regions):
+            page = _run(
+                builder.DocumentBuilder(
+                    resolve_lines=resolve_lines, resolve_blocks=resolve_blocks, keep_reading_order=True
+                ),
+                boxes,
+                words,
+                page_regions,
+            )
+            assert page.render(block_break=" ").split() == expected
+
+
+def test_documentbuilder_keep_reading_order_without_resolve_lines():
+    # resolve_lines=False still reads row by row (lines are resolved internally only to order the content)
+    boxes, words, expected = _two_columns_of_words()
+    page = _run(
+        builder.DocumentBuilder(resolve_lines=False, resolve_blocks=False, keep_reading_order=True), boxes, words
+    )
+    assert page.render(block_break=" ").split() == expected
+    # each column collapses onto a single line since lines are not exposed
+    assert all(len(block.lines) == 1 for block in page.blocks)
+
+
+def test_documentbuilder_keep_reading_order_prefers_layout_furniture():
+    boxes = [
+        [0.1, 0.05, 0.9, 0.09],  # footer text (near the top of the page)
+        [0.1, 0.30, 0.9, 0.38],  # first body line
+        [0.1, 0.45, 0.9, 0.53],  # second body line
+        [0.1, 0.15, 0.9, 0.20],  # header text
+    ]
+    words = [("foot", 0.9), ("first", 0.9), ("second", 0.9), ("head", 0.9)]
+    regions = {
+        "boxes": np.asarray([[0.05, 0.03, 0.95, 0.11], [0.05, 0.13, 0.95, 0.22]]),
+        "class_names": ["Page-footer", "Page-header"],
+        "scores": [0.9, 0.9],
+    }
+    for resolve_lines, resolve_blocks in _FLAG_COMBINATIONS:
+        page = _run(
+            builder.DocumentBuilder(
+                resolve_lines=resolve_lines, resolve_blocks=resolve_blocks, keep_reading_order=True
+            ),
+            boxes,
+            words,
+            regions,
+        )
+        assert page.render(block_break=" ").split() == ["head", "first", "second", "foot"]
+
+
+def test_documentbuilder_keep_reading_order_without_resolve_lines_rotated():
+    angle = np.deg2rad(20.0)
+    ca, sa = np.cos(angle), np.sin(angle)
+
+    def _rot(x0, y0, x1, y1, cx=0.5, cy=0.5):
+        return [
+            [cx + (x - cx) * ca - (y - cy) * sa, cy + (x - cx) * sa + (y - cy) * ca]
+            for x, y in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        ]
+
+    cells = []
+    for column, tag in ((0.08, "L"), (0.55, "R")):
+        for row in range(3):
+            y = 0.15 + 0.04 * row
+            cells.append((_rot(column, y, column + 0.15, y + 0.02), f"{tag}{row}a"))
+            cells.append((_rot(column + 0.17, y, column + 0.34, y + 0.02), f"{tag}{row}b"))
+    boxes = np.asarray([box for box, _ in cells], dtype=np.float32)
+    words = [(text, 0.9) for _, text in cells]
+
+    page = _run(
+        builder.DocumentBuilder(resolve_lines=False, resolve_blocks=False, keep_reading_order=True), boxes, words
+    )
+    assert page.render(block_break=" ").split() == "L0a L0b L1a L1b L2a L2b R0a R0b R1a R1b R2a R2b".split()
+
+
+def test_documentbuilder_keep_reading_order_no_double_sort_across_exports():
+    boxes = [[x, 0.15 + 0.03 * r, x + 0.37, 0.17 + 0.03 * r] for x in (0.08, 0.55) for r in range(3)]
+    boxes.append([0.3, 0.05, 0.7, 0.08])  # a footer, geometrically at the top
+    words = [("L0", 0.9), ("L1", 0.9), ("L2", 0.9), ("R0", 0.9), ("R1", 0.9), ("R2", 0.9), ("foot", 0.9)]
+    regions = {
+        "boxes": np.asarray([[0.06, 0.13, 0.47, 0.26], [0.53, 0.13, 0.94, 0.26], [0.25, 0.03, 0.75, 0.10]]),
+        "class_names": ["Text", "Text", "Page-footer"],
+        "scores": [0.9, 0.9, 0.9],
+    }
+    page = _run(builder.DocumentBuilder(resolve_blocks=True, keep_reading_order=True), boxes, words, regions)
+
+    expected = ["L0", "L1", "L2", "R0", "R1", "R2", "foot"]
+    block_order = [word.value for block in page.blocks for line in block.lines for word in line.words]
+    assert block_order == expected
+    # render() follows the stored order and is idempotent (no conflicting re-sort)
+    assert page.render(block_break=" ").split() == expected
+    assert page.render(block_break=" ").split() == page.render(block_break=" ").split()
+    # markdown re-derives reading order from the lines and lands on the same order
+    markdown_words = [token for token in page.export_as_markdown().replace("#", " ").split() if token in expected]
+    assert markdown_words == expected

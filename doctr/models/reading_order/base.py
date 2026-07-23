@@ -227,6 +227,23 @@ def _topological_order(boxes: np.ndarray, x_overlap_threshold: float, y_overlap_
             parent[ri] = rj
     component = np.array([_find(i) for i in range(num_boxes)])
 
+    # Detect whether the page is multi-column: if a vertical line can be drawn that separates the boxes into two
+    # groups with a small number of crossing boxes, the page is considered multi-column. This is used to
+    # favor the continuation of the current column when traversing the graph, which keeps multi-column bodies intact
+    # even for non-Manhattan layouts where recursive XY-cuts fail to find a valid split.
+    multi_column = False
+    if num_boxes >= 4:
+        span = page_width
+        tolerance = max(1, int(0.05 * num_boxes))
+        for frac in np.linspace(0.25, 0.75, 21):
+            split = x0.min() + frac * span
+            crossing = int(np.count_nonzero((x0 < split - 0.002 * span) & (x1 > split + 0.002 * span)))
+            left = int(np.count_nonzero(x1 <= split))
+            right = int(np.count_nonzero(x0 >= split))
+            if crossing <= tolerance and left >= 0.25 * num_boxes and right >= 0.25 * num_boxes:
+                multi_column = True
+                break
+
     while len(order) < num_boxes:
         ready = np.flatnonzero((in_degree == 0) & ~emitted)
         if ready.size == 0:  # cycle safety net (can only happen with degenerate overlapping geometries)
@@ -237,7 +254,7 @@ def _topological_order(boxes: np.ndarray, x_overlap_threshold: float, y_overlap_
             # last emitted one with a horizontal overlap
             candidates = (
                 ready[(x_overlap[last, ready] > x_overlap_threshold) & (y0[ready] >= y0[last])]
-                if last >= 0
+                if last >= 0 and multi_column
                 else np.empty(0, dtype=int)
             )
             if candidates.size == 0 and last >= 0:
