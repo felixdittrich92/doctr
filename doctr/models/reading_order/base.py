@@ -235,12 +235,12 @@ def _topological_order(boxes: np.ndarray, x_overlap_threshold: float, y_overlap_
     if num_boxes >= 4:
         span = page_width
         tolerance = max(1, int(0.05 * num_boxes))
-        for frac in np.linspace(0.25, 0.75, 21):
-            split = x0.min() + frac * span
-            crossing = int(np.count_nonzero((x0 < split - 0.002 * span) & (x1 > split + 0.002 * span)))
-            left = int(np.count_nonzero(x1 <= split))
-            right = int(np.count_nonzero(x0 >= split))
-            if crossing <= tolerance and left >= 0.25 * num_boxes and right >= 0.25 * num_boxes:
+        centers = (x0 + x1) / 2
+        lo, hi = x0.min() + 0.25 * span, x0.min() + 0.75 * span
+        for split in np.unique(x1[(x1 >= lo) & (x1 <= hi)]):
+            crossing = int(np.count_nonzero(np.minimum(x1 - split, split - x0) > 0.02 * span))
+            left = int(np.count_nonzero(centers <= split))
+            if crossing <= tolerance and left >= 0.25 * num_boxes and num_boxes - left >= 0.25 * num_boxes:
                 multi_column = True
                 break
 

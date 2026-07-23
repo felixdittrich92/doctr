@@ -386,8 +386,10 @@ def test_export_mixins_carry_full_api():
         page.export_as("pptx")
 
 
-def test_page_render_keeps_reading_order():
-    # Blocks provided out of order: render must emit them top-to-bottom, left column before right
+def test_page_render_preserves_block_order():
+    # `render` is a plain join: the blocks are emitted in the order they are stored. The reading order is
+    # the builder's responsibility (`keep_reading_order` arranges the blocks in place at build time), so
+    # blocks provided out of order stay out of order here
     left = elements.Block(
         lines=[_line_at("left top", 0.08, 0.1, 0.45, 0.13), _line_at("left low", 0.08, 0.2, 0.45, 0.23)]
     )
@@ -395,8 +397,8 @@ def test_page_render_keeps_reading_order():
         lines=[_line_at("right top", 0.55, 0.1, 0.92, 0.13), _line_at("right low", 0.55, 0.2, 0.92, 0.23)]
     )
     page = elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [right, left], 0, (1000, 800))
-    assert page.render() == "left top\nleft low\n\nright top\nright low"
-    # Single-block and empty pages are unaffected
+    assert page.render() == "right top\nright low\n\nleft top\nleft low"
+    # Single-block and empty pages
     assert elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [left], 0, (1000, 800)).render() == "left top\nleft low"
     assert elements.Page(np.zeros((10, 10, 3), dtype=np.uint8), [], 0, (1000, 800)).render() == ""
 
