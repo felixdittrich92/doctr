@@ -154,10 +154,22 @@ def _to_canonical_ltr(boxes: np.ndarray, direction: str) -> np.ndarray:
 
 
 def _overlap_ratios(starts: np.ndarray, ends: np.ndarray) -> np.ndarray:
-    """Compute the pairwise 1D overlap of intervals, normalized by the length of the smaller interval"""
-    inter = np.minimum(ends[:, None], ends[None, :]) - np.maximum(starts[:, None], starts[None, :])
-    min_len = np.minimum(ends - starts, (ends - starts)[:, None])
-    return np.clip(inter, 0, None) / np.clip(min_len, 1e-9, None)
+    """Compute the pairwise 1D overlap of intervals, normalized by the length of the smaller interval
+
+    Computed in float32 with in-place operations: the result is only ever compared against overlap
+    thresholds, so single precision is ample, and the N x N intermediates dominate the memory of the
+    caller on dense pages.
+    """
+    starts = starts.astype(np.float32, copy=False)
+    ends = ends.astype(np.float32, copy=False)
+    lengths = ends - starts
+    inter = np.minimum(ends[:, None], ends[None, :])
+    inter -= np.maximum(starts[:, None], starts[None, :])
+    np.clip(inter, 0, None, out=inter)
+    min_len = np.minimum(lengths, lengths[:, None])
+    np.clip(min_len, 1e-9, None, out=min_len)
+    inter /= min_len
+    return inter
 
 
 def _strict_rank(primary: np.ndarray, secondary: np.ndarray) -> np.ndarray:
@@ -193,13 +205,17 @@ def _topological_order(boxes: np.ndarray, x_overlap_threshold: float, y_overlap_
     # Strict total orders on both axes, so that the induced relations cannot create 2-cycles
     x_rank = _strict_rank(x0, x1)
     y_rank = _strict_rank(y0, y1)
-    is_above = y_rank[:, None] < y_rank[None, :]
-    is_left = x_rank[:, None] < x_rank[None, :]
 
-    # i -> j edges: i must be read before j
-    edges = ((x_overlap > x_overlap_threshold) & is_above) | (
-        (x_overlap <= x_overlap_threshold) & (y_overlap > y_overlap_threshold) & is_left
-    )
+    # i -> j edges: i must be read before j. The matrices are combined in place: every intermediate is an
+    # N x N array, so materializing them all at once dominates the memory of this function on dense pages.
+    x_linked = x_overlap > x_overlap_threshold
+    edges = y_rank[:, None] < y_rank[None, :]  # i is above j
+    edges &= x_linked
+    same_row = y_overlap > y_overlap_threshold
+    same_row &= ~x_linked
+    same_row &= x_rank[:, None] < x_rank[None, :]  # i is on the left of j
+    edges |= same_row
+    del same_row
     np.fill_diagonal(edges, False)
 
     in_degree = edges.sum(axis=0)
@@ -220,8 +236,11 @@ def _topological_order(boxes: np.ndarray, x_overlap_threshold: float, y_overlap_
             node = int(parent[node])
         return node
 
-    col_edges = (x_overlap > x_overlap_threshold) & ~spanning[:, None] & ~spanning[None, :]
-    for i, j in np.argwhere(np.triu(col_edges, 1)):
+    # Reuse the horizontal-overlap matrix; keep the upper triangle only, so each pair is visited once
+    col_edges = np.triu(x_linked, 1)
+    col_edges &= ~spanning[:, None]
+    col_edges &= ~spanning[None, :]
+    for i, j in np.argwhere(col_edges):
         ri, rj = _find(int(i)), _find(int(j))
         if ri != rj:
             parent[ri] = rj
@@ -232,7 +251,7 @@ def _topological_order(boxes: np.ndarray, x_overlap_threshold: float, y_overlap_
     # favor the continuation of the current column when traversing the graph, which keeps multi-column bodies intact
     # even for non-Manhattan layouts where recursive XY-cuts fail to find a valid split.
     multi_column = False
-    if num_boxes >= 4:
+    if num_boxes >= 3:
         span = page_width
         tolerance = max(1, int(0.05 * num_boxes))
         centers = (x0 + x1) / 2

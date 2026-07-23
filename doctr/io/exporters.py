@@ -40,6 +40,7 @@ _LIST_LABELS = {"list_item"}
 # Characters / line markers that carry a structural meaning and are escaped to preserve the raw OCR text
 _MD_SPECIAL_CHARS = "\\`*_[]|#<>"
 _MD_LINE_MARKERS = "-+>#=`"
+_ADOC_SPECIAL_CHARS = "\\`*_#^~|+{}<>"
 _ADOC_LINE_MARKERS = "=*.-/+"
 
 
@@ -64,8 +65,33 @@ def _covering_region_indices(geoms: list[Any], region_geoms: list[Any], min_cove
     return [int(reg) if coverage[i, reg] >= min_coverage else -1 for i, reg in enumerate(best)]
 
 
+def _reading_order_signature(page: "Page", direction: str) -> tuple[Any, ...]:
+    """A cheap structural fingerprint of a page, used to invalidate the reading-order cache.
+
+    Covers the requested direction and the identity (plus line count) of every block and table, so
+    replacing or re-grouping the page content invalidates the cache. In-place edits to a `Line`'s words
+    are not detected; callers mutating a page that deeply should drop `_reading_order_cache` themselves.
+    """
+    return (
+        direction,
+        tuple((id(block), len(block.lines)) for block in page.blocks),
+        tuple(id(table) for table in getattr(page, "tables", ()) or ()),
+    )
+
+
+def _store_reading_order(page: "Page", signature: tuple[Any, ...], result: tuple[Any, ...]) -> None:
+    """Memoize a reading-order result on the page, ignoring pages that reject attribute assignment."""
+    try:
+        page._reading_order_cache = (signature, result)  # type: ignore[attr-defined]
+    except AttributeError:  # pragma: no cover - e.g. a __slots__ subclass
+        pass
+
+
 def page_reading_order(page: "Page", direction: str = "auto") -> tuple[list[Any], list[str | None], str]:
     """Linearize the content of a page (blocks & tables) in reading order.
+
+    The result is memoized on the page: every exporter calls this, so a page exported to several formats
+    (or built with `keep_reading_order=True` and then exported) orders its content once.
 
     Args:
         page: the page to linearize
@@ -84,6 +110,12 @@ def page_reading_order(page: "Page", direction: str = "auto") -> tuple[list[Any]
         resolve_reading_segments,
     )
 
+    signature = _reading_order_signature(page, direction)
+    cached = getattr(page, "_reading_order_cache", None)
+    if cached is not None and cached[0] == signature:
+        items, labels, resolved = cached[1]
+        return list(items), list(labels), resolved
+
     texts = [word.value for block in page.blocks for line in block.lines for word in line.words]
     language = page.language.get("value") if isinstance(page.language, dict) else None
     direction = ReadingOrderPredictor(direction=direction).resolve_direction(texts, language=language)
@@ -93,6 +125,7 @@ def page_reading_order(page: "Page", direction: str = "auto") -> tuple[list[Any]
     lines = [line for block in page.blocks for line in block.lines]
     elements: list[Any] = [*lines, *page.tables]
     if len(elements) == 0:
+        _store_reading_order(page, signature, ([], [], direction))
         return [], [], direction
     # De-skew once so labeling, ordering and region grouping share the same upright frame; the page angle is
     # estimated from the word polygons, which carry the detection model's true orientation
@@ -108,8 +141,8 @@ def page_reading_order(page: "Page", direction: str = "auto") -> tuple[list[Any]
     elt_labels = ["Table" if isinstance(elt, Table) else label for elt, label in zip(elements, elt_labels)]
     segments = resolve_reading_segments(elt_geoms, direction=direction, labels=elt_labels)
 
-    items: list[Any] = []
-    labels: list[str | None] = []
+    items = []
+    labels = []
     # Region index covering each element, used to group the lines of a wrapped list item under a single bullet
     region_idx = _covering_region_indices(elt_geoms, region_geoms) if len(region_geoms) > 0 else [-1] * len(elements)
     open_list_region: int | None = None  # region of the list bullet currently being built (None outside a list)
@@ -136,6 +169,7 @@ def page_reading_order(page: "Page", direction: str = "auto") -> tuple[list[Any]
             items.append(Block(lines=[elements[idx] for idx in segment]))
             labels.append(seg_label)
             open_list_region = None
+    _store_reading_order(page, signature, (items, labels, direction))
     return items, labels, direction
 
 
@@ -350,6 +384,9 @@ class AsciiDocExporter(_PageTextExporter):
     bullet: ClassVar[str] = "* "
     page_break: ClassVar[str] = "\n\n<<<\n\n"
 
+    def escape_text(self, text: str) -> str:
+        return "".join(f"\\{char}" if char in _ADOC_SPECIAL_CHARS else char for char in text)
+
     def finalize_line(self, line: str) -> str:
         stripped = line.lstrip()
         if stripped and stripped[0] in _ADOC_LINE_MARKERS:
@@ -363,19 +400,28 @@ class AsciiDocExporter(_PageTextExporter):
             return ""
 
         def _row(row: list[str]) -> str:
-            return " ".join("|" + value.replace("|", "\\|").replace("\n", " ").strip() for value in row)
+            return " ".join(
+                "|" + (self.escape_text(value) if escape else value.replace("|", "\\|")).replace("\n", " ").strip()
+                for value in row
+            )
 
         return "\n".join(["|===", _row(grid[0]), "", *[_row(row) for row in grid[1:]], "|==="])
 
     def class_header(self, class_name: str, escape: bool = True) -> str:
-        return f"*{class_name}*"
+        return f"*{self.escape_text(class_name) if escape else class_name}*"
 
 
 class HTMLExporter(_PageTextExporter):
     """Export OCR results to semantic HTML, with the content sorted in reading order.
 
     Headings map to `<h1>`/`<h2>`, list items to `<ul><li>`, recognized tables to `<table>` and
-    paragraphs to `<p>` (with `<br>` between the visual lines of a paragraph).
+    paragraphs to `<p>` (with `<br>` between the visual lines of a paragraph). The output is a
+    fragment, not a full document: it carries no doctype, `<html>` or charset declaration.
+
+    .. warning::
+        The recognized text is HTML-escaped by default. Passing ``escape=False`` interpolates the OCR
+        output into the markup verbatim, so a document containing markup yields active HTML.
+        Only disable escaping for output that is never rendered in a browser.
 
     >>> from doctr.io import HTMLExporter
     >>> html = HTMLExporter().export_page(page)
@@ -755,7 +801,8 @@ class PageExportsMixin:
 
         Args:
             direction: reading direction, one of 'auto', 'ltr', 'rtl', 'ttb-rtl' or 'ttb-ltr'
-            escape: whether the line-level markers carrying a structural meaning in AsciiDoc should be neutralized
+            escape: whether the characters and line markers carrying a structural meaning in AsciiDoc should
+                be escaped
             include_furniture: whether page headers, page footers and footnotes should be included
 
         Returns:
@@ -781,7 +828,8 @@ class PageExportsMixin:
         """Export the page in the requested format.
 
         Args:
-            format: one of 'markdown'/'md', 'asciidoc'/'adoc', 'text'/'txt', 'json'/'dict', 'xml'/'hocr'
+            format: one of 'markdown'/'md', 'asciidoc'/'adoc', 'html', 'text'/'txt', 'json'/'dict',
+                'xml'/'hocr'
             **kwargs: additional keyword arguments passed to the format-specific export method
 
         Returns:
@@ -795,8 +843,8 @@ class PageExportsMixin:
             "html": self.export_as_html,
             "text": self.render,
             "txt": self.render,
-            "json": lambda: self.export(),
-            "dict": lambda: self.export(),
+            "json": self.export,
+            "dict": self.export,
             "xml": self.export_as_xml,
             "hocr": self.export_as_xml,
         }
@@ -872,7 +920,8 @@ class KIEPageExportsMixin:
 
         Args:
             direction: reading direction, one of 'auto', 'ltr', 'rtl', 'ttb-rtl' or 'ttb-ltr'
-            escape: whether the line-level markers carrying a structural meaning in AsciiDoc should be neutralized
+            escape: whether the characters and line markers carrying a structural meaning in AsciiDoc should
+                be escaped
 
         Returns:
             an AsciiDoc string with one section per detection class
@@ -884,8 +933,8 @@ class KIEPageExportsMixin:
         return HTMLExporter().export_kie_page(cast("KIEPage", self), direction=direction)
 
     def export_as(self, format: str, **kwargs: Any) -> Any:
-        """Export the KIE page in the requested format ('markdown'/'md', 'asciidoc'/'adoc', 'text'/'txt',
-        'json'/'dict', 'xml'/'hocr')."""
+        """Export the KIE page in the requested format ('markdown'/'md', 'asciidoc'/'adoc', 'html',
+        'text'/'txt', 'json'/'dict', 'xml'/'hocr')."""
         exporters: dict[str, Any] = {
             "markdown": self.export_as_markdown,
             "md": self.export_as_markdown,
@@ -894,8 +943,8 @@ class KIEPageExportsMixin:
             "html": self.export_as_html,
             "text": self.render,
             "txt": self.render,
-            "json": lambda: self.export(),
-            "dict": lambda: self.export(),
+            "json": self.export,
+            "dict": self.export,
             "xml": self.export_as_xml,
             "hocr": self.export_as_xml,
         }
@@ -962,8 +1011,8 @@ class DocumentExportsMixin:
         return page_break.join(page.export_as_html(**kwargs) for page in self.pages)
 
     def export_as(self, format: str, **kwargs: Any) -> Any:
-        """Export the document in the requested format ('markdown'/'md', 'asciidoc'/'adoc', 'text'/'txt',
-        'json'/'dict', 'xml'/'hocr')."""
+        """Export the document in the requested format ('markdown'/'md', 'asciidoc'/'adoc', 'html',
+        'text'/'txt', 'json'/'dict', 'xml'/'hocr')."""
         exporters: dict[str, Any] = {
             "markdown": self.export_as_markdown,
             "md": self.export_as_markdown,
@@ -972,8 +1021,8 @@ class DocumentExportsMixin:
             "html": self.export_as_html,
             "text": self.render,
             "txt": self.render,
-            "json": lambda: self.export(),
-            "dict": lambda: self.export(),
+            "json": self.export,
+            "dict": self.export,
             "xml": self.export_as_xml,
             "hocr": self.export_as_xml,
         }

@@ -190,20 +190,23 @@ class DocumentBuilder(NestedObject):
             rows.append(words)
 
         # Split the rows horizontally, using a break distance adapted to the page spacing.
-        gaps = []
+        # The gaps are collected with one vectorized pass per row (the loop is over rows, not word pairs).
+        gap_chunks = []
         n_pairs = 0
         for row in rows:
-            row_sorted = sorted(row, key=lambda i: boxes[i, 0])
-            n_pairs += max(len(row_sorted) - 1, 0)
-            for prev, nxt in zip(row_sorted, row_sorted[1:]):
-                gap = boxes[nxt, 0] - boxes[prev, 2]
-                if gap > 0:
-                    gaps.append(float(gap))
+            if len(row) < 2:
+                continue
+            row_idcs = np.asarray(row)
+            row_idcs = row_idcs[np.argsort(boxes[row_idcs, 0], kind="stable")]
+            n_pairs += row_idcs.shape[0] - 1
+            gap_chunks.append(boxes[row_idcs[1:], 0] - boxes[row_idcs[:-1], 2])
+        all_gaps = np.concatenate(gap_chunks) if gap_chunks else np.empty(0, dtype=boxes.dtype)
+        pos_gaps = all_gaps[all_gaps > 0]
         # Median word height, converted to width units
         aspect = (shape[0] / shape[1]) if shape is not None else 1.0
         floor = float(y_med) * aspect
-        if len(gaps) >= 5 and len(gaps) >= 0.5 * n_pairs:
-            break_dist = min(self.paragraph_break, max(3.0 * float(np.median(gaps)), floor))
+        if pos_gaps.shape[0] >= 5 and pos_gaps.shape[0] >= 0.5 * n_pairs:
+            break_dist = min(self.paragraph_break, max(3.0 * float(np.median(pos_gaps)), floor))
         elif n_pairs >= 5:
             break_dist = min(self.paragraph_break, floor)
         else:
@@ -659,7 +662,7 @@ class DocumentBuilder(NestedObject):
         Args:
             page: the page whose blocks should be reordered in place
         """
-        from doctr.io.exporters import page_reading_order
+        from doctr.io.exporters import _reading_order_signature, _store_reading_order, page_reading_order
 
         if not page.blocks:
             return
@@ -672,13 +675,18 @@ class DocumentBuilder(NestedObject):
             groups = self._resolve_lines(self._words_to_boxes(words), page.dimensions)
             page.blocks = [Block([Line([words[idx] for idx in group]) for group in groups])]
 
-        items, _, _ = page_reading_order(page)
+        items, labels, direction = page_reading_order(page)
         blocks = [item for item in items if isinstance(item, Block)]
         page.blocks = (
             [Block(lines=[Line([word for block in blocks for line in block.lines for word in line.words])])]
             if collapse
             else blocks
         )
+        if not collapse:
+            # The page now *is* the reading order, so an export would recompute the very same linearization.
+            # Re-key the cached result to the new block list so the first export reuses it.
+            # Skipped when collapsing: the single flattened line no longer matches the line-level items.
+            _store_reading_order(page, _reading_order_signature(page, "auto"), (items, labels, direction))
 
     def extra_repr(self) -> str:
         return (
