@@ -162,4 +162,7 @@ The underlying ordering primitives live in :mod:`doctr.models.reading_order`.
 .. autoclass:: HTMLExporter
     :members: export_page, export_kie_page, export_document
 
+.. autoclass:: XMLExporter
+    :members: export_page, export_kie_page, export_document
+
 .. autofunction:: doctr.io.exporters.page_reading_order

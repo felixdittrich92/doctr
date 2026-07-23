@@ -225,9 +225,6 @@ def test_page_export_as_markdown_wrapped_list_item():
 
 
 def test_page_export_as_markdown_rotated_page():
-    # A rotated page (4-point geometries) must export in the same reading order as its upright version:
-    # the ordering is computed in a de-skewed frame. Without the de-skew, the rightmost column of a header
-    # row is the highest element of the rotated frame and would be read first.
     height, width = 1000, 800
 
     def _rot_line(text, x0, y0, x1, y1, deg):
@@ -277,9 +274,6 @@ def test_page_export_as_markdown_rotated_page():
 
 
 def test_page_export_as_markdown_rotated_landscape_page():
-    # On a landscape page the relative-frame tilt exceeds the absolute rotation, which biases the edge angles
-    # of the enclosing line boxes: the ordering angle must therefore come from the word polygons. Locked here
-    # with a -35 degree landscape page, which fails when the angle is estimated from the line geometries.
     height, width = 800, 1200
 
     def _rot_line(text, x0, y0, x1, y1, deg):
@@ -387,9 +381,6 @@ def test_export_mixins_carry_full_api():
 
 
 def test_page_render_preserves_block_order():
-    # `render` is a plain join: the blocks are emitted in the order they are stored. The reading order is
-    # the builder's responsibility (`keep_reading_order` arranges the blocks in place at build time), so
-    # blocks provided out of order stay out of order here
     left = elements.Block(
         lines=[_line_at("left top", 0.08, 0.1, 0.45, 0.13), _line_at("left low", 0.08, 0.2, 0.45, 0.23)]
     )

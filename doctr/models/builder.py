@@ -47,10 +47,7 @@ class DocumentBuilder(NestedObject):
         keep_reading_order: if True, arrange the content of every page in reading order (cf.
             :mod:`doctr.models.reading_order`). The reading direction is inferred from the recognized text.
             When a layout is available it is always preferred: the text blocks and the page furniture
-            (headers, footers, ...) are taken from the layout regions. This is effective for every
-            combination of `resolve_lines` / `resolve_blocks` (including `resolve_lines=False`, in which
-            case lines are resolved internally only to order the content). The reading-order-aware exports
-            (e.g. `Document.export_as_markdown`) apply reading order regardless of this flag.
+            (headers, footers, ...) are taken from the layout regions.
     """
 
     def __init__(
@@ -72,11 +69,8 @@ class DocumentBuilder(NestedObject):
         """Sort bounding boxes from top to bottom, left to right
 
         Args:
-            boxes: bounding boxes of shape (N, 4) or (N, 4, 2) (in case of rotated bbox)
-            shape: the page dimensions (height, width). The de-skew angle is estimated in absolute
-                coordinates, since relative coordinates distort angles by the page aspect ratio (a 6 degree
-                skew on a portrait page measures below 4 degrees in relative coordinates, which used to fall
-                under the rotation threshold and fragment every line).
+            boxes: bounding boxes of shape (N, 4) or (N, 4, 2)
+            shape: the page dimensions (height, width)
 
         Returns:
             tuple: indices of ordered boxes of shape (N,), boxes

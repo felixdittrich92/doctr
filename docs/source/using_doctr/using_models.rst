@@ -651,10 +651,9 @@ The `export_as` method is a convenience dispatcher over all the formats above::
   result.export_as("xml")       # same as export_as_xml()
 
 The document structure itself can also be produced in reading order by building the predictor with
-``keep_reading_order=True``, which sorts the blocks of every page in reading order (best combined with
-``resolve_blocks=True``)::
+``keep_reading_order=True``, which sorts the blocks of every page in reading order::
 
-  predictor = ocr_predictor(pretrained=True, resolve_blocks=True, keep_reading_order=True)
+  predictor = ocr_predictor(pretrained=True, keep_reading_order=True)
 
 Advanced options
 ^^^^^^^^^^^^^^^^
