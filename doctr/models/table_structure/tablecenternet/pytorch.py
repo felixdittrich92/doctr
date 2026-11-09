@@ -149,7 +149,8 @@ class TableCenterNet(nn.Module, _TableCenterNet):
         center_k: maximum number of cell centers
         corner_k: maximum number of corners
         not_relocate: if True, skip the corner-relocation step
-        geometric_logic: if True, remove the duplicate cells and align the logical coordinates on the cell geometry
+        geometric_logic: if True, remove the duplicate cells and derive the logical coordinates from the cell geometry
+        structure_thresh: with `geometric_logic`, minimum score of the cells the grid lines are built from
         assume_straight_pages: if True, the predictor will fit straight boxes to the cells
         exportable: onnx exportable returns only the raw head maps
         cfg: the configuration dict of the model
@@ -162,12 +163,13 @@ class TableCenterNet(nn.Module, _TableCenterNet):
         head_conv: int = 256,
         first_level: int = 1,
         last_level: int = 4,
-        center_thresh: float = 0.3,
-        corner_thresh: float = 0.3,
+        center_thresh: float = 0.2,
+        corner_thresh: float = 0.2,
         center_k: int = 10000,
         corner_k: int = 12000,
         not_relocate: bool = False,
         geometric_logic: bool = True,
+        structure_thresh: float = 0.3,
         max_objects: int = 3000,
         max_corners: int = 12000,
         assume_straight_pages: bool = True,
@@ -216,6 +218,7 @@ class TableCenterNet(nn.Module, _TableCenterNet):
             corner_thresh=corner_thresh,
             not_relocate=not_relocate,
             geometric_logic=geometric_logic,
+            structure_thresh=structure_thresh,
             assume_straight_pages=self.assume_straight_pages,
         )
 

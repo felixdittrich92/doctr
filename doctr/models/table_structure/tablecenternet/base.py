@@ -71,19 +71,46 @@ def _bbox_overlap_query(center_polys: np.ndarray, corner_polys: np.ndarray) -> l
     return out
 
 
-def _deskew_cells(polys: np.ndarray) -> np.ndarray:
-    """Rotate (N, 4, 2) cell quadrilaterals so the rows and columns of the table become horizontal and vertical.
+def _table_angle(polys: np.ndarray, ref: np.ndarray | None = None) -> float:
+    """Angle of the rows of a table, from its (N, 4, 2) cells.
 
-    The angle is the mean direction of the cell top edges modulo 90 degrees: the corner order of the cells (and a
-    rotation of the table by a multiple of 90 degrees) does not matter, the axes are matched in `_logic_from_geometry`.
+    The angle is the mean direction of the cell edges modulo 90 degrees, weighted by their length (the direction of a
+    short edge is noisy): the corner order of the cells (and a rotation of the table by a multiple of 90 degrees) does
+    not matter, the axes are matched in `_logic_from_geometry`.
+
+    Args:
+        polys: the cells, of shape (N, 4, 2)
+        ref: the cells the angle is estimated from (all of them by default), boolean mask of shape (N,)
+
+    Returns:
+        the angle, in radians
     """
-    top_edges = polys[:, 1] - polys[:, 0]
-    theta = np.arctan2(top_edges[:, 1], top_edges[:, 0])
-    angle = float(np.arctan2(np.sin(4 * theta).mean(), np.cos(4 * theta).mean()) / 4)
-    cos_a, sin_a = math.cos(-angle), math.sin(-angle)
-    pts = polys.reshape(-1, 2) - polys.reshape(-1, 2).mean(axis=0)
-    rotated = np.stack([pts[:, 0] * cos_a - pts[:, 1] * sin_a, pts[:, 0] * sin_a + pts[:, 1] * cos_a], axis=1)
-    return rotated.reshape(polys.shape)
+    ref_polys = polys if ref is None or not np.any(ref) else polys[ref]
+    # The top and left edges of the cells: the 4-fold angle maps both onto the direction of the rows
+    edges = np.concatenate([ref_polys[:, 1] - ref_polys[:, 0], ref_polys[:, 3] - ref_polys[:, 0]])
+    theta = np.arctan2(edges[:, 1], edges[:, 0])
+    weight = np.linalg.norm(edges, axis=1)
+    return float(np.arctan2((weight * np.sin(4 * theta)).sum(), (weight * np.cos(4 * theta)).sum()) / 4)
+
+
+def _rotate_points(pts: np.ndarray, angle: float) -> np.ndarray:
+    """Rotate points of shape (..., 2) by an angle (in radians) around the origin."""
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    return np.stack([pts[..., 0] * cos_a - pts[..., 1] * sin_a, pts[..., 0] * sin_a + pts[..., 1] * cos_a], axis=-1)
+
+
+def _deskew_cells(polys: np.ndarray, ref: np.ndarray | None = None) -> np.ndarray:
+    """Rotate (N, 4, 2) cell quadrilaterals around their mean point so the rows and columns of the table become
+    horizontal and vertical (cf. `_table_angle`).
+
+    Args:
+        polys: the cells, of shape (N, 4, 2)
+        ref: the cells the angle is estimated from (all of them by default), boolean mask of shape (N,)
+
+    Returns:
+        the deskewed cells, of shape (N, 4, 2), centered on their mean point
+    """
+    return _rotate_points(polys - polys.reshape(-1, 2).mean(axis=0), -_table_angle(polys, ref))
 
 
 def _cell_edges(polys: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -147,141 +174,275 @@ def _cluster_lines(values: np.ndarray, tol: float) -> np.ndarray:
     return np.sort(np.asarray(lines))
 
 
-def _vote_line_indices(
-    n_lines: int, start: np.ndarray, end: np.ndarray, model_logic: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Logical index of each grid line, voted by the model's logical coordinates of the cells lying on it.
+def _grid_lines(
+    start_edge: np.ndarray, end_edge: np.ndarray, model_logic: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Group the start / end edges of the cells along one axis into the grid lines of the table.
 
     Args:
-        n_lines: number of grid lines
-        start: index of the line each cell starts on, shape (N,)
-        end: index of the line each cell ends on, shape (N,)
+        start_edge: position of the start edge of each cell, shape (N,)
+        end_edge: position of the end edge of each cell, shape (N,)
         model_logic: the model's (start, end) logical coordinates of the cells along this axis, shape (N, 2)
 
     Returns:
-        the (non-decreasing) logical index of each line, shape (n_lines,), and whether a strict majority of the cells
-        on the line voted for it, shape (n_lines,)
+        the sorted line positions, and the index of the line each cell starts / ends on (a cell spans at least one
+        line interval)
     """
-    votes: list[list[int]] = [[] for _ in range(n_lines)]
-    starts_of: list[list[int]] = [[] for _ in range(n_lines)]  # start lines of the cells ending on each line
-    for s, e, (m_start, m_end) in zip(start, end, model_logic):
-        votes[s].append(int(m_start))  # a cell starts on its line at its start index
-        votes[e].append(int(m_end) + 1)  # and ends on the line following its last index
-        starts_of[e].append(int(s))
-    values = np.zeros(n_lines, dtype=np.int64)
-    majority = np.zeros(n_lines, dtype=bool)
-    prev = -1
-    for k, v in enumerate(votes):
-        value = max(prev, 0)
-        if v:
-            uniq, counts = np.unique(v, return_counts=True)
-            value = int(uniq[counts.argmax()])  # most voted (the smallest one on ties)
-            # A split vote is not a drift of the model: some annotations index a same line differently per row
-            majority[k] = counts.max() > len(v) / 2
-        if majority[k]:
-            # Lines are ordered: their indices can not decrease. Several lines may share an index (the edges of a
-            # row / column do not always line up), so they are not forced to strictly increase
-            value = max(value, prev)
-            # But a cell spans at least one index: the line moves on when at least half of the cells ending on it
-            # would span none
-            need = [values[s] + 1 for s in starts_of[k] if majority[s] and values[s] + 1 > value]
-            if need and 2 * len(need) >= len(starts_of[k]):
-                value = max(need)
-            values[k] = prev = value
-        else:
-            values[k] = value
-    return values, majority
+    extent = end_edge - start_edge
+    # Tolerance on the alignment of the edges, from the narrowest cells along this axis
+    tol = max(0.4 * float(np.percentile(extent, 10)), 1e-6)
+    for _ in range(3):
+        lines = _cluster_lines(np.concatenate([start_edge, end_edge]), tol)
+        start = np.abs(start_edge[:, None] - lines[None]).argmin(axis=1)
+        end = np.abs(end_edge[:, None] - lines[None]).argmin(axis=1)
+        # The 2 edges of a narrow row / column (less than 10% of the cells) merged into a single line: the
+        # tolerance is lowered from the cells it collapsed. A single collapsed cell is a stray detection
+        collapsed = (start == end) & (extent > 2.5e-2 * tol)
+        if np.count_nonzero(collapsed) < 2:
+            break
+        new_tol = max(0.4 * float(np.median(extent[collapsed])), 1e-6)
+        if new_tol >= 0.9 * tol:
+            break
+        tol = new_tol
+    if lines.size < 2:
+        return lines, start, end
+    lines, start, end = _merge_split_lines(lines, start, end, start_edge, end_edge, model_logic)
+    end = np.clip(end, 1, lines.size - 1)
+    start = np.minimum(start, end - 1)
+    return lines, start, end
 
 
-def _connected_tables(left: np.ndarray, right: np.ndarray, top: np.ndarray, bottom: np.ndarray) -> np.ndarray:
-    """Label the groups of touching cells (deskewed extents), i.e. the separate tables of an image."""
-    n = left.size
-    # Neighbouring cells of a table share their edges, up to a fraction of the smallest cell sizes
-    margin = 0.25 * float(min(np.percentile(right - left, 10), np.percentile(bottom - top, 10)))
-    touch = (
-        (left[:, None] <= right[None] + margin)
-        & (left[None] <= right[:, None] + margin)
-        & (top[:, None] <= bottom[None] + margin)
-        & (top[None] <= bottom[:, None] + margin)
-    )
-    labels = -np.ones(n, dtype=np.int64)
-    for seed in range(n):
-        if labels[seed] >= 0:
-            continue
-        labels[seed] = seed
-        stack = [seed]
-        while stack:
-            i = stack.pop()
-            for j in np.flatnonzero(touch[i] & (labels < 0)):
-                labels[j] = seed
-                stack.append(int(j))
-    return labels
+def _merge_split_lines(
+    lines: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+    start_edge: np.ndarray,
+    end_edge: np.ndarray,
+    model_logic: np.ndarray,
+    max_shift: float = 0.3,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Merge the neighbouring grid lines that are the same line of the table.
+
+    A line of a table photographed in perspective (or slightly curved) drifts along the table, and the clustering of
+    its edges splits it in several lines. 2 neighbouring lines are merged when none of their edges moves by more than
+    `max_shift` of the extent of its cell, no cell starts and ends on the merged line (the 2 lines of a narrow row /
+    column are kept), and the model does not index them differently (e.g. the close but distinct lines of rows /
+    columns that only exist in a part of the table).
+
+    Args:
+        lines: the sorted line positions
+        start: index of the line each cell starts on
+        end: index of the line each cell ends on
+        start_edge: position of the start edge of each cell
+        end_edge: position of the end edge of each cell
+        model_logic: the model's (start, end) logical coordinates of the cells along this axis, shape (N, 2)
+        max_shift: maximum move of an edge, relative to the extent of its cell
+
+    Returns:
+        the merged line positions, and the index of the line each cell starts / ends on
+    """
+    extent = np.maximum(end_edge - start_edge, 1e-9)
+    edges = np.concatenate([start_edge, end_edge])
+    edge_extent = np.concatenate([extent, extent])
+    # The model index of each edge: a cell starts on the line of its start index, and ends on the line following its
+    # last index
+    edge_index = np.concatenate([model_logic[:, 0], model_logic[:, 1] + 1])
+    lines, start, end = lines.copy(), start.copy(), end.copy()
+
+    def model_index(on: np.ndarray) -> int | None:
+        """The index the model gives to a line, when a strict majority of its edges agree on it"""
+        values, counts = np.unique(edge_index[on], return_counts=True)
+        return int(values[counts.argmax()]) if counts.size and 2 * counts.max() > on.sum() else None
+
+    while lines.size > 2:
+        on_line = np.concatenate([start, end])
+        best, best_cost = -1, max_shift
+        for k in range(lines.size - 1):
+            on_pair = (on_line == k) | (on_line == k + 1)
+            # a cell between the 2 lines
+            if np.any((start == k) & (end == k + 1)):
+                continue
+            index_k, index_next = model_index(on_line == k), model_index(on_line == k + 1)
+            if index_k is not None and index_next is not None and index_k != index_next:
+                continue
+            merged = float(np.median(edges[on_pair]))
+            cost = float(np.max(np.abs(edges[on_pair] - merged) / edge_extent[on_pair]))
+            if cost < best_cost:
+                best, best_cost = k, cost
+        if best < 0:
+            break
+        on_pair = (on_line == best) | (on_line == best + 1)
+        lines[best] = float(np.median(edges[on_pair]))
+        lines = np.delete(lines, best + 1)
+        start[start > best] -= 1
+        end[end > best] -= 1
+    return lines, start, end
 
 
-def _align_table_logic(edges: tuple[np.ndarray, ...], logic: np.ndarray) -> np.ndarray:
-    """Align the (N, 4) logical coordinates of the cells of a single table on their deskewed edges."""
+def _align_table_logic(
+    edges: tuple[np.ndarray, ...], logic: np.ndarray, ref: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, list[np.ndarray]]:
+    """Make the (N, 4) logical coordinates of the cells of a table consistent with their deskewed edges.
+
+    Args:
+        edges: the left, right, top and bottom edges of the deskewed cells, each of shape (N,)
+        logic: the logical coordinates predicted by the model, of shape (N, 4)
+        ref: the cells the grid lines are built from, of shape (N,): the other ones are placed on these lines
+
+    Returns:
+        the logical coordinates, of shape (N, 4), whether each cell is kept, of shape (N,), and the left, right, top
+        and bottom edges of the cells once the other cells are placed on the grid lines
+    """
     left, right, top, bottom = edges
     logic = logic.copy()
+    keep = np.ones(logic.shape[0], dtype=bool)
+    placed = [left.copy(), right.copy(), top.copy(), bottom.copy()]
     # The table may be rotated by any multiple of 90 degrees (or the corners ordered by the image axes): match each
     # logical axis (columns, rows) with the geometric axis and direction its model coordinates follow
     geo_axes = [(left, right), (top, bottom)]
     corr = np.zeros((2, 2))
     for g, (lo, hi) in enumerate(geo_axes):
         for a, offset in enumerate((0, 2)):
-            pos, idx = lo + hi, logic[:, offset] + logic[:, offset + 1]
+            pos, idx = (lo + hi)[ref], (logic[:, offset] + logic[:, offset + 1])[ref]
             if pos.std() > 0 and idx.std() > 0:
                 corr[g, a] = float(np.corrcoef(pos, idx)[0, 1])
     swap = abs(corr[1, 0]) + abs(corr[0, 1]) > abs(corr[0, 0]) + abs(corr[1, 1])
     for a, offset in enumerate((0, 2)):
         g = 1 - a if swap else a
         start_edge, end_edge = geo_axes[g]
-        if corr[g, a] < 0:  # the logical indices grow against the geometric axis
+        flip = corr[g, a] < 0
+        if flip:  # the logical indices grow against the geometric axis
             start_edge, end_edge = -end_edge, -start_edge
-        # Tolerance on the alignment of the edges, from the narrowest cells along this axis: merging the 2 lines of a
-        # narrow row / column would lose it, while splitting a line only makes lines sharing the same index
-        tol = max(0.4 * float(np.percentile(end_edge - start_edge, 10)), 1e-6)
-        lines = _cluster_lines(np.concatenate([start_edge, end_edge]), tol)
+        lines, ref_start, ref_end = _grid_lines(start_edge[ref], end_edge[ref], logic[ref, offset : offset + 2])
         if lines.size < 2:  # degenerate (flat) cells: nothing to align
             continue
-        # Index of the line each cell starts / ends on (a cell spans at least one row / column)
+        # The other cells are placed on the nearest lines: the ones spanning no line interval are dropped
         start = np.abs(start_edge[:, None] - lines[None]).argmin(axis=1)
         end = np.abs(end_edge[:, None] - lines[None]).argmin(axis=1)
-        end = np.clip(end, 1, lines.size - 1)
-        start = np.minimum(start, end - 1)
-        values, majority = _vote_line_indices(lines.size, start, end, logic[:, offset : offset + 2])
-        model_start, model_end = logic[:, offset], logic[:, offset + 1]
-        span = np.maximum(model_end - model_start, 0)
-        line_start, line_end = values[start], values[end] - 1
-        new_start = np.where(majority[start], line_start, np.where(majority[end], line_end - span, model_start))
-        new_end = np.where(majority[end], line_end, np.where(majority[start], line_start + span, model_end))
-        logic[:, offset] = new_start
-        logic[:, offset + 1] = np.maximum(new_end, new_start)
-    return logic
+        start[ref], end[ref] = ref_start, ref_end
+        keep &= end > start
+        end = np.maximum(end, start + 1)
+        # and their edges are the lines they are placed on
+        last = np.minimum(end, lines.size - 1)  # a dropped cell may start on the last line
+        lo, hi = (-lines[last], -lines[start]) if flip else (lines[start], lines[last])
+        placed[2 * g][~ref], placed[2 * g + 1][~ref] = lo[~ref], hi[~ref]
+        # Each grid line is a logical index: a cell spans the indices between the lines it starts and ends on. The
+        # cells of a visual row / column share their indices even when the model drifts on some of them, and cells
+        # that do not overlap do not share a logical position
+        new_start, new_end = start, end - 1
+        # The model indices count the rows / columns before the first line (e.g. an undetected header row): their
+        # offset is kept when most of the cells agree on it
+        diff = (logic[:, offset] - new_start)[ref]
+        values, counts = np.unique(diff, return_counts=True)
+        shift = max(int(values[counts.argmax()]), 0) if 2 * counts.max() > diff.size else 0
+        logic[:, offset] = new_start + shift
+        logic[:, offset + 1] = new_end + shift
+    return logic, keep, placed
 
 
-def _logic_from_geometry(polys: np.ndarray, model_logic: np.ndarray) -> np.ndarray:
+def _logic_from_geometry(
+    polys: np.ndarray, model_logic: np.ndarray, anchored: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Make the logical coordinates `[start_col, end_col, start_row, end_row]` (0-indexed) of (N, 4, 2) cells
     consistent with their geometry.
 
-    The cells are split into tables (groups of touching cells), and in each table the cell edges are grouped into
-    the row and column lines of the grid: each line takes the logical index the model predicts for most of the cells
-    on it. The cells of a visual row / column share their indices, even when the model drifts on some of them, while
-    the absolute indices of the model are kept (e.g. a row with no detected cell still counts).
+    The cell edges are grouped into the row and column lines of the grid, and each line becomes a logical index: the
+    cells of a visual row / column share their indices, even when the logical-coordinate head of the model drifts on
+    some of them (borderless tables, long tables), and cells that do not overlap do not share a logical position. The
+    model coordinates give the direction of the axes (the table may be rotated) and the offset of the first row /
+    column.
 
     Args:
         polys: the cells, of shape (N, 4, 2)
         model_logic: the logical coordinates predicted by the model, of shape (N, 4)
+        anchored: whether the geometry of each cell is reliable (e.g. its corners were relocated on detected corners),
+            of shape (N,). The grid lines are built from these cells, the other ones are placed on them (their edges
+            become the lines they are placed on), or dropped when they span no row / column. All the cells are
+            reliable by default.
 
     Returns:
-        the logical coordinates, of shape (N, 4)
+        the logical coordinates, of shape (N, 4), whether each cell is kept, of shape (N,), and the cells, of shape
+        (N, 4, 2), the unreliable ones placed on the grid lines
     """
-    edges = _cell_edges(_deskew_cells(polys))
-    logic = np.asarray(model_logic, dtype=np.int64).copy()
-    labels = _connected_tables(*edges)
-    for label in np.unique(labels):
-        idx = np.flatnonzero(labels == label)
-        logic[idx] = _align_table_logic(tuple(e[idx] for e in edges), logic[idx])
-    return logic
+    anchored = np.ones(polys.shape[0], dtype=bool) if anchored is None else np.asarray(anchored, dtype=bool)
+    # A cell whose geometry is not reliable (e.g. a partial cell cut by the image border) has drifting edges, and
+    # would add lines
+    ref = anchored if np.count_nonzero(anchored) >= 2 else np.ones_like(anchored)
+    angle, center = _table_angle(polys, ref), polys.reshape(-1, 2).mean(axis=0)
+    deskewed = _rotate_points(polys - center, -angle)
+    logic, keep, (left, right, top, bottom) = _align_table_logic(
+        _cell_edges(deskewed), np.asarray(model_logic, dtype=np.int64), ref
+    )
+    placed = polys.copy()
+    if not ref.all():
+        rects = np.stack([np.stack([left, top], -1), np.stack([right, top], -1), np.stack([right, bottom], -1)], 1)
+        rects = np.concatenate([rects, np.stack([left, bottom], -1)[:, None]], axis=1)
+        placed[~ref] = (_rotate_points(rects[~ref], angle) + center).astype(polys.dtype)
+    return logic, keep, placed
+
+
+def _free_logical_cells(logic: np.ndarray, scores: np.ndarray) -> np.ndarray:
+    """Mask of the cells to keep so that no 2 cells share a logical position: the cells are taken by decreasing
+    score, and a cell spanning a position already taken is dropped (e.g. a cell partly overlapping 2 cells).
+
+    Args:
+        logic: the logical coordinates `[start_col, end_col, start_row, end_row]` of the cells, of shape (N, 4)
+        scores: the scores of the cells, of shape (N,)
+
+    Returns:
+        boolean mask of shape (N,)
+    """
+    keep = np.zeros(logic.shape[0], dtype=bool)
+    if logic.shape[0] == 0:
+        return keep
+    lo = logic.min(axis=0)
+    taken = np.zeros((logic[:, 3].max() - lo[2] + 1, logic[:, 1].max() - lo[0] + 1), dtype=bool)
+    for i in np.argsort(-scores, kind="stable"):
+        c0, c1, r0, r1 = logic[i] - lo[[0, 0, 2, 2]]
+        if not taken[r0 : r1 + 1, c0 : c1 + 1].any():
+            taken[r0 : r1 + 1, c0 : c1 + 1] = True
+            keep[i] = True
+    return keep
+
+
+def _edge_ratio(quad: np.ndarray) -> float:
+    """Largest length ratio between the opposite edges of a (4, 2) quadrilateral (1 for a parallelogram)"""
+    lengths = np.linalg.norm(np.roll(quad, -1, axis=0) - quad, axis=1)  # top, right, bottom, left
+    lengths = np.maximum(lengths, 1e-6)
+    return float(
+        max(lengths[0] / lengths[2], lengths[2] / lengths[0], lengths[1] / lengths[3], lengths[3] / lengths[1])
+    )
+
+
+def _misplaced_corners(origin: np.ndarray, cell: np.ndarray, max_ratio: float = 1.5) -> list[int]:
+    """Corners of a cell relocated on the corner of another cell, to be moved back to their regressed position.
+
+    The regressed quadrilateral of a cell is roughly a parallelogram (a rectangle in perspective). A corner relocated
+    on the corner of a neighbouring cell (e.g. a row further) makes 2 opposite edges of very different lengths: the
+    relocated corners are moved back, the one restoring the shape the most first, until the shape is restored.
+
+    Args:
+        origin: the regressed quadrilateral of the cell, of shape (4, 2)
+        cell: the quadrilateral after the corner relocation, of shape (4, 2)
+        max_ratio: maximum length ratio of 2 opposite edges (when the regressed quadrilateral is within it)
+
+    Returns:
+        the indices of the corners to move back
+    """
+    limit = max(max_ratio, _edge_ratio(origin))
+    cell = cell.copy()
+    moved = [k for k in range(4) if not np.array_equal(cell[k], origin[k])]
+    reverted: list[int] = []
+    while moved and _edge_ratio(cell) > limit:
+        ratios = []
+        for k in moved:
+            candidate = cell.copy()
+            candidate[k] = origin[k]
+            ratios.append(_edge_ratio(candidate))
+        k = moved.pop(int(np.argmin(ratios)))
+        cell[k] = origin[k]
+        reverted.append(k)
+    return reverted
 
 
 def _lookup_logic(lc_map: np.ndarray, x: float, y: float) -> np.ndarray:
@@ -305,24 +466,29 @@ class TableCenterNetPostProcessor:
         corner_thresh: minimum score for a corner to be used during relocation
         not_relocate: if True, skip the corner-relocation step (faster, less accurate)
         assume_straight_pages: whether the pages are assumed to be straight (i.e., no rotation)
-        geometric_logic: if True, remove the duplicate (overlapping) cells and make the logical coordinates
-            consistent with the cell geometry: the cells whose edges lie on the same grid line share the logical
-            index most of them are predicted with (the logical-coordinate head drifts on borderless tables)
+        geometric_logic: if True, remove the duplicate (overlapping) cells and derive the logical coordinates from
+            the cell geometry: the cell edges are grouped into the grid lines of the table, each line being a logical
+            index (the logical-coordinate head drifts on borderless and long tables), and no 2 cells share a logical
+            position
+        structure_thresh: with `geometric_logic`, minimum score of the cells the grid lines are built from, when they
+            make most of the table (the other cells are placed on these lines)
     """
 
     def __init__(
         self,
-        center_thresh: float = 0.3,
-        corner_thresh: float = 0.3,
+        center_thresh: float = 0.2,
+        corner_thresh: float = 0.2,
         not_relocate: bool = False,
         assume_straight_pages: bool = True,
         geometric_logic: bool = True,
+        structure_thresh: float = 0.3,
     ) -> None:
         self.center_thresh = center_thresh
         self.corner_thresh = corner_thresh
         self.not_relocate = not_relocate
         self.assume_straight_pages = assume_straight_pages
         self.geometric_logic = geometric_logic
+        self.structure_thresh = structure_thresh
         # Cell score decay: cells optimised on <= 2 corners get their score scaled.
         self.cell_min_optimize_count = 2
         self.cell_decay_thresh = 0.4
@@ -371,7 +537,11 @@ class TableCenterNetPostProcessor:
                     n_repeat += 1
                     cell[idx] = [cx, cy]
                     lc_logic[idx] = corner_logics[j]
-            corner_count[i] = n_used + n_repeat
+            reverted = _misplaced_corners(origin, cell)
+            for k in reverted:
+                cell[k] = origin[k]
+                lc_logic[k] = None
+            corner_count[i] = n_used + n_repeat - len(reverted)
             for k in range(4):
                 if lc_logic[k] is None:
                     lc_logic[k] = _lookup_logic(lc_map, cell[k][0], cell[k][1])
@@ -384,7 +554,7 @@ class TableCenterNetPostProcessor:
         decay = keep_high & (corner_count <= self.cell_min_optimize_count)
         cs[decay] *= self.cell_decay_thresh
         order = np.argsort(-cs)
-        return cp[order], cs[order], logic[order]
+        return cp[order], cs[order], logic[order], ~decay[order]
 
     def _simple(self, decoded: dict[str, np.ndarray], b: int):
         cp = decoded["center_polygons"][b]
@@ -397,14 +567,15 @@ class TableCenterNetPostProcessor:
             lc_logic = np.stack([_lookup_logic(lc_map, cell[k][0], cell[k][1]) for k in range(4)])
             col_span, row_span = int(round(float(spans[i][0]))), int(round(float(spans[i][1])))
             logic[i] = _get_logic_coords(lc_logic, col_span, row_span)
-        return cp, cs, logic
+        # No corner relocation: every cell is taken as is
+        return cp, cs, logic, np.ones(cs.shape[0], dtype=bool)
 
     def __call__(self, decoded: dict[str, np.ndarray]) -> list[dict[str, np.ndarray]]:
         feat_h, feat_w = decoded["feat_size"]
         scale = np.array([feat_w, feat_h], dtype=np.float32)
         results: list[dict[str, np.ndarray]] = []
         for b in range(decoded["center_polygons"].shape[0]):
-            cp, cs, logic = self._simple(decoded, b) if self.not_relocate else self._relocate(decoded, b)
+            cp, cs, logic, anchored = self._simple(decoded, b) if self.not_relocate else self._relocate(decoded, b)
             keep = cs >= self.center_thresh
             polys = cp[keep].reshape(-1, 4, 2) / scale  # relative coordinates
             polys = np.clip(polys.astype(np.float32), 0, 1)
@@ -412,8 +583,16 @@ class TableCenterNetPostProcessor:
             logic = (logic[keep] - 1).astype(np.int32)  # start_col, end_col, start_row, end_row (0-indexed)
             if self.geometric_logic and polys.shape[0] > 0:
                 kept = _suppress_overlapping_cells(polys, scores)
-                polys, scores = polys[kept], scores[kept]
-                logic = _logic_from_geometry(polys, logic[kept]).astype(np.int32)
+                polys, scores, anchored = polys[kept], scores[kept], anchored[keep][kept]
+                # The grid lines are built from the confident cells when they make most of the table
+                confident = anchored & (scores >= self.structure_thresh)
+                logic, valid, polys = _logic_from_geometry(
+                    polys, logic[kept], confident if 2 * np.count_nonzero(confident) > scores.size else anchored
+                )
+                polys = np.clip(polys, 0, 1)
+                polys, scores, logic = polys[valid], scores[valid], logic[valid].astype(np.int32)
+                free = _free_logical_cells(logic, scores)
+                polys, scores, logic = polys[free], scores[free], logic[free]
             if self.assume_straight_pages:
                 cells = np.concatenate([polys.min(axis=1), polys.max(axis=1)], axis=1).astype(np.float32)
             else:

@@ -233,6 +233,13 @@ class OCRPredictor(nn.Module, _OCRPredictor):
             out = self._remap_to_original_coords(out, _orig_shapes, _straight_shapes, m_invs, _orig_pages)
         return out
 
+    @staticmethod
+    def _region_fraction(poly: np.ndarray, x0: float, x1: float, y0: float, y1: float) -> float:
+        """Fraction of the bounding box of a (N, 2) polygon lying inside the rectangle [x0, x1] x [y0, y1]"""
+        (px0, py0), (px1, py1) = poly.min(axis=0), poly.max(axis=0)
+        inter = max(min(px1, x1) - max(px0, x0), 0) * max(min(py1, y1) - max(py0, y0), 0)
+        return float(inter / max((px1 - px0) * (py1 - py0), 1e-9))
+
     def _tables_from_regions(
         self,
         pages: list[np.ndarray],
@@ -256,8 +263,8 @@ class OCRPredictor(nn.Module, _OCRPredictor):
             coordinates
         """
         crops: list[np.ndarray] = []
-        # (page index, inverse transform, crop width, crop height, page width, page height)
-        crop_meta: list[tuple[int, np.ndarray, int, int, int, int]] = []
+        # (page index, inverse transform, crop width, crop height, page width, page height, context padding)
+        crop_meta: list[tuple[int, np.ndarray, int, int, int, int, int]] = []
         for p_idx, (page, region) in enumerate(zip(pages, regions)):
             if region is None:
                 continue
@@ -290,14 +297,14 @@ class OCRPredictor(nn.Module, _OCRPredictor):
                 transform = cv2.getPerspectiveTransform(src, dst)
                 inverse = cv2.getPerspectiveTransform(dst, src)
                 crops.append(cv2.warpPerspective(page, transform, (out_w, out_h), borderMode=cv2.BORDER_REPLICATE))
-                crop_meta.append((p_idx, inverse, out_w, out_h, w, h))
+                crop_meta.append((p_idx, inverse, out_w, out_h, w, h, pad))
 
         tables_per_page: list[list[dict[str, Any]]] = [[] for _ in pages]
         if len(crops) == 0:
             return tables_per_page
 
         grids = self.table_predictor(crops, **kwargs)  # type: ignore[misc]
-        for (p_idx, inverse, crop_w, crop_h, w, h), grid in zip(crop_meta, grids):
+        for (p_idx, inverse, crop_w, crop_h, w, h, pad), grid in zip(crop_meta, grids):
             remapped_cells: list[dict[str, Any]] = []
             for cell in grid["cells"]:
                 # Cell polygon is crop-relative -> crop pixels -> page pixels (inverse transform) -> page-relative
@@ -309,6 +316,10 @@ class OCRPredictor(nn.Module, _OCRPredictor):
                     poly = raw.reshape(-1, 2)
                 poly[:, 0] *= crop_w
                 poly[:, 1] *= crop_h
+                # The page context around the table region only helps the model: a cell lying mostly in it (e.g.
+                # under the last row) is not part of the table, and would take the words around the table
+                if self._region_fraction(poly, pad, crop_w - pad, pad, crop_h - pad) < 0.5:
+                    continue
                 poly = cv2.perspectiveTransform(poly[None, :, :], inverse)[0]
                 poly[:, 0] /= w
                 poly[:, 1] /= h

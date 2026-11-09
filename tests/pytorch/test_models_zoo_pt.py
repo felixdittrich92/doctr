@@ -408,6 +408,32 @@ def test_ocrpredictor_tables(mock_pdf, mock_vocab):
         assert exported["tables"] == [t.export() for t in page.tables]
 
 
+def test_ocrpredictor_tables_drop_context_cells():
+    predictor = models.ocr_predictor("db_mobilenet_v3_large", "crnn_vgg16_bn", pretrained=False, detect_tables=True)
+    page = np.zeros((400, 600, 3), dtype=np.uint8)
+    # A table region of 200 x 100 pixels: its crop gets a 20-pixel page context on each side (240 x 140)
+    regions = [{"class_names": ["Table"], "boxes": [[0.25, 0.25, 0.25 + 200 / 600, 0.5]], "scores": [0.9]}]
+
+    def cell(x0, y0, x1, y1, row):
+        box = [x0 / 240, y0 / 140, x1 / 240, y1 / 140]
+        return {"geometry": box, "score": 0.5, "row_start": row, "row_end": row, "col_start": 0, "col_end": 0}
+
+    class FakeTableModel(torch.nn.Module):
+        def forward(self, crops, **kwargs):
+            assert crops[0].shape[:2] == (140, 240)
+            # a cell in the region, and one lying mostly in the context under it
+            return [{"cells": [cell(20, 20, 220, 110, 0), cell(20, 110, 220, 135, 1)], "num_rows": 2, "num_cols": 1}]
+
+    predictor.table_predictor = FakeTableModel()
+    tables = predictor._tables_from_regions([page], regions)
+    assert len(tables[0]) == 1 and len(tables[0][0]["cells"]) == 1
+    np.testing.assert_allclose(
+        np.asarray(tables[0][0]["cells"][0]["geometry"]),
+        [[0.25, 0.25], [0.25 + 200 / 600, 0.25], [0.25 + 200 / 600, 0.25 + 90 / 400], [0.25, 0.25 + 90 / 400]],
+        atol=1e-5,
+    )
+
+
 def test_ocrpredictor_tables_factory():
     # The factory exposes a single `detect_tables` flag, which also enables the layout model
     predictor = models.ocr_predictor("db_mobilenet_v3_large", "crnn_vgg16_bn", pretrained=False, detect_tables=True)
