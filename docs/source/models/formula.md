@@ -27,8 +27,9 @@ up its whole batch: set it with `formula_predictor(..., max_decode_length=...)`.
 | --- | --- | ---: | ---: | ---: |
 | `formulanet` | (256, 768, 3) | 26.4 M | 13.6 M | 12.9 M |
 
-The input is wide rather than square, so long equations are not shrunk: each formula is trimmed of its margins, resized
-to fit the input while keeping its aspect ratio, and padded.
+The input is wide rather than square, so long equations are not shrunk: each formula is resized to fit the input while
+keeping its aspect ratio, and padded. The model is trained with random margins around the formulas, so the crops of
+layout regions are read as they are, margins included.
 
 :::{note}
 No pretrained weights are released for `formulanet` yet: train it on your data with the

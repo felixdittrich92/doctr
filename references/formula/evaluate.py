@@ -10,7 +10,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
-from torchvision.transforms.v2 import Compose, Normalize
+from torchvision.transforms.v2 import Normalize
 
 if os.getenv("TQDM_SLACK_TOKEN") and os.getenv("TQDM_SLACK_CHANNEL"):
     from tqdm.contrib.slack import tqdm
@@ -21,7 +21,7 @@ from doctr import transforms as T
 from doctr.datasets import RecognitionDataset
 from doctr.models import formula
 from doctr.utils.metrics import FormulaMetric
-from utils import TrimMargins, amp_dtype, filter_samples, load_vocab, model_device, resolve_device
+from utils import amp_dtype, filter_samples, load_vocab, model_device, resolve_device
 
 AMP_DTYPE = torch.float16  # set from --amp-dtype in main()
 
@@ -99,10 +99,7 @@ def main(args):
     ds = RecognitionDataset(
         img_folder=str(dataset_path.joinpath("images")),
         labels_path=str(dataset_path.joinpath("labels.json")),
-        img_transforms=Compose([
-            T.ImageTorchvisionTransform(TrimMargins()),
-            T.Resize(args.input_size, preserve_aspect_ratio=True),
-        ]),
+        img_transforms=T.Resize(args.input_size, preserve_aspect_ratio=True),
     )
     unknown, too_long = filter_samples(ds, vocab, args.max_length)
     if unknown or too_long:

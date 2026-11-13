@@ -15,8 +15,6 @@ from doctr.models.preprocessor import PreProcessor
 from doctr.models.utils import set_device_and_dtype
 from doctr.utils.geometry import extract_crops, extract_rcrops
 
-from .._utils import trim_margins
-
 __all__ = ["FormulaPredictor"]
 
 
@@ -33,8 +31,8 @@ def _crop_region(page: np.ndarray, region: np.ndarray) -> np.ndarray | None:
 class FormulaPredictor(nn.Module):
     """Implements an object able to recognize mathematical formulas as LaTeX strings
 
-    The uniform margins around each formula image are trimmed before it is resized (keeping its aspect ratio),
-    padded and normalized.
+    Each formula image is resized (keeping its aspect ratio), padded and normalized. The margins around a formula
+    (e.g. of a layout region) are kept: the model is trained to read formulas with margins.
 
     Args:
         pre_processor: transform inputs for easier batched model inference
@@ -89,7 +87,7 @@ class FormulaPredictor(nn.Module):
         if empty is not None:
             raise ValueError(f"incorrect input shape: crops are expected to be non-empty, got shape {empty.shape}.")
 
-        processed_batches = self.pre_processor([trim_margins(crop) for crop in crops])
+        processed_batches = self.pre_processor(list(crops))
         _params = next(self.model.parameters())
         self.model, processed_batches = set_device_and_dtype(  # type: ignore[assignment]
             self.model, processed_batches, _params.device, _params.dtype

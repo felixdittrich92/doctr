@@ -104,13 +104,9 @@ def test_formula_zoo(mock_formula_image):
     assert out[0][0] == out[2][0] and out[0][1] == pytest.approx(out[2][1], abs=1e-5)
     assert predictor([]) == []
 
-    # The white margins around a formula (e.g. of a layout region) are trimmed: they do not change the prediction
-    image = DocumentFile.from_images([mock_formula_image])[0]
-    rows, cols = np.nonzero(image.min(axis=-1) < 128)
-    tight = image[rows.min() : rows.max() + 1, cols.min() : cols.max() + 1]
-    with_margins, without_margins = predictor([image, tight])
-    assert with_margins[0] == without_margins[0]
-    assert with_margins[1] == pytest.approx(without_margins[1], abs=1e-4)
+    # A real formula, with the margins of a layout region: read as it is
+    (latex, confidence), *_ = predictor(DocumentFile.from_images([mock_formula_image]))
+    assert isinstance(latex, str) and 0 <= confidence <= 1
 
     with pytest.raises(ValueError):
         predictor([np.zeros((32, 64), dtype=np.uint8)])

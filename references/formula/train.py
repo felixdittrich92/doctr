@@ -46,7 +46,6 @@ from doctr.models import formula, login_to_hub, push_to_hf_hub
 from doctr.utils.metrics import FormulaMetric
 from utils import (
     EarlyStopper,
-    TrimMargins,
     amp_dtype,
     filter_samples,
     load_vocab,
@@ -346,10 +345,7 @@ def main(args):
     val_hash = _labels_hash(val_path)
     val_set = _load_dataset(
         val_path,
-        img_transforms=Compose([
-            T.ImageTorchvisionTransform(TrimMargins()),
-            T.Resize(args.input_size, preserve_aspect_ratio=True),
-        ]),
+        img_transforms=T.Resize(args.input_size, preserve_aspect_ratio=True),
     )
     unknown, too_long = filter_samples(val_set, vocab, args.max_length)
     if rank == 0 and (unknown or too_long):
@@ -410,7 +406,8 @@ def main(args):
     train_set = _load_dataset(
         train_path,
         img_transforms=Compose([
-            T.ImageTorchvisionTransform(TrimMargins()),
+            # The crops of layout regions come with margins: learn to read them as they are
+            T.RandomPad(max_ratio=0.5, p=0.5),
             T.Resize(args.input_size, preserve_aspect_ratio=True),
             # Augmentations
             T.ImageTorchvisionTransform(RandomPhotometricDistort(p=0.1)),
@@ -742,7 +739,7 @@ def parse_args():
         "Default: CUDA if available, else MPS, else CPU.",
     )
 
-    parser.add_argument("--lr", type=float, default=3e-4, help="learning rate for the optimizer (Adam or AdamW)")
+    parser.add_argument("--lr", type=float, default=0.001, help="learning rate for the optimizer (Adam or AdamW)")
     parser.add_argument("--wd", "--weight-decay", default=0.01, type=float, help="weight decay", dest="weight_decay")
     parser.add_argument("--warmup-steps", type=int, default=1000, help="number of linear warmup steps of the LR")
     parser.add_argument("-j", "--workers", type=int, default=None, help="number of workers used for dataloading")

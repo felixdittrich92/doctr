@@ -222,7 +222,7 @@ tables[0][0]["cells"][0]["words"]  # indices of the words of the cell in `word_b
 :::
 
 :::{tab-item} Formula recognition
-Pass images of formulas, e.g. crops of the `Formula` regions. Their margins are trimmed before they are resized:
+Pass images of formulas, e.g. crops of the `Formula` regions, margins included:
 
 ```python
 from doctr.models import formula_predictor

@@ -28,9 +28,13 @@ unzip toy_formula_set-8f54029b.zip -d formula_set
 python references/formula/train.py formulanet --train_path ./formula_set --val_path ./formula_set -b 2 --epochs 1
 ```
 
-`--input_size H W` sets the input size of the model (`256 768` by default): each formula is trimmed of its margins,
-then resized to fit it while keeping its aspect ratio, and padded. `--max_length` sets the maximum number of tokens of
-a formula (`4096` by default, enough for the longest UniMER-1M label).
+`--input_size H W` sets the input size of the model (`256 768` by default): each formula is resized to fit it while
+keeping its aspect ratio, and padded. The training adds random margins around half of the formulas
+(`doctr.transforms.RandomPad`: each side up to half the image height, in the background color of the image), so that the
+model reads the crops of layout regions as they are: the formulas are not trimmed, neither at training nor at inference.
+
+`--max_length` sets the maximum number of tokens of a formula (`4096` by default, enough for the longest UniMER-1M
+label).
 
 Long formulas are memory-hungry: a batch is padded to its longest formula. `--max-tokens` bounds the number of padded
 target tokens per forward pass (`32768` by default, about 8.5 GB of GPU memory with `--amp-dtype bfloat16` and the

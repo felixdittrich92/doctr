@@ -14,7 +14,6 @@ import torch
 
 import doctr
 from doctr.datasets import LATEX_TOKENS, tokenize_latex
-from doctr.models.formula._utils import trim_margins
 
 
 def plot_samples(images, targets):
@@ -206,25 +205,6 @@ def run_metadata(args, **task_specific) -> dict:
         "args": dict(vars(args)),
         **task_specific,
     }
-
-
-class TrimMargins:
-    """Crop the uniform margins around a formula, as `FormulaPredictor` does at inference
-
-    Args:
-        margin: number of pixels of margin kept around the content
-    """
-
-    def __init__(self, margin: int = 2) -> None:
-        self.margin = margin
-
-    def __call__(self, img: torch.Tensor) -> torch.Tensor:
-        # (C, H, W) float tensor in [0, 1] -> (H, W, C) array
-        trimmed = trim_margins(img.permute(1, 2, 0).numpy(), margin=self.margin)
-        return torch.from_numpy(np.ascontiguousarray(trimmed)).permute(2, 0, 1)
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(margin={self.margin})"
 
 
 def load_vocab(path: str | None) -> list[str]:
