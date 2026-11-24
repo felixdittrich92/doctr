@@ -13,8 +13,9 @@ import torch
 from scipy.optimize import linear_sum_assignment
 from torch import nn
 from torch.nn import functional as F
+from torchvision.models._utils import IntermediateLayerGetter
 
-from doctr.models.classification import vit_det_m, vit_det_s
+from doctr.models.classification import litenet_tiny, vit_det_m, vit_det_s
 
 from ...utils import _bf16_to_float32, load_pretrained_params
 from .base import _LWDETR, LWDETRPostProcessor
@@ -25,7 +26,7 @@ from .layers import (
     refine_obb_boxes,
 )
 
-__all__ = ["LWDETR", "lw_detr_s", "lw_detr_m"]
+__all__ = ["LWDETR", "lw_detr_s", "lw_detr_m", "lw_detr_lite"]
 
 
 default_cfgs: dict[str, dict[str, Any]] = {
@@ -66,6 +67,25 @@ default_cfgs: dict[str, dict[str, Any]] = {
             "Title",
         ],
         "url": "https://github.com/mindee/doctr/releases/download/v1.1.0/lw_detr_m-12c799e1.pt",
+    },
+    "lw_detr_lite": {
+        "input_shape": (3, 1024, 1024),
+        "mean": (0.798, 0.785, 0.772),
+        "std": (0.264, 0.2749, 0.287),
+        "class_names": [
+            "Caption",
+            "Footnote",
+            "Formula",
+            "List-item",
+            "Page-footer",
+            "Page-header",
+            "Picture",
+            "Section-header",
+            "Table",
+            "Text",
+            "Title",
+        ],
+        "url": None,
     },
 }
 
@@ -148,6 +168,25 @@ def _probiou(
     bhattacharyya = (t1 + t2 + t3).clamp(min=eps, max=100.0)
     hellinger = (1.0 - (-bhattacharyya).exp() + eps).sqrt()
     return 1.0 - hellinger
+
+
+class LiteNetEncoder(nn.Module):
+    """Convolutional encoder of the lightweight LW-DETR: the stride 16 and stride 32 feature maps of a LiteNet, the
+    latter upsampled to stride 16, so that the projector of `LWDETRBackbone` fuses them into a single stride 16 map
+    (as with the ViT encoders of the larger models).
+
+    Args:
+        backbone: the LiteNet backbone
+    """
+
+    def __init__(self, backbone: nn.Module) -> None:
+        super().__init__()
+        self.body = IntermediateLayerGetter(backbone, {"3": "stride16", "4": "stride32"})
+
+    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        feats = self.body(x)
+        stride16 = feats["stride16"]
+        return [stride16, F.interpolate(feats["stride32"], size=stride16.shape[-2:], mode="nearest")]
 
 
 class LWDETRBackbone(nn.Module):
@@ -893,3 +932,54 @@ def lw_detr_m(pretrained: bool = False, **kwargs: Any) -> LWDETR:
         ],
         **kwargs,
     )
+
+
+def lw_detr_lite(pretrained: bool = False, **kwargs: Any) -> LWDETR:
+    """Ultra-lightweight LW-DETR for fast CPU inference: a LiteNet-Tiny convolutional encoder instead of a ViT and a
+    64-dimensional decoder with 2 layers, based on `"LW-DETR: A Transformer Replacement to YOLO for Real-Time
+    Detection" <https://arxiv.org/pdf/2406.03459v1>`_. Same inputs, training targets, loss and post-processing as the
+    larger LW-DETR models.
+
+    >>> import torch
+    >>> from doctr.models import lw_detr_lite
+    >>> model = lw_detr_lite(pretrained=False).eval()
+    >>> input_tensor = torch.rand((1, 3, 1024, 1024), dtype=torch.float32)
+    >>> out = model(input_tensor)
+
+    Args:
+        pretrained: If True, returns a model pre-trained on our layout dataset
+        **kwargs: keyword arguments of the LWDETR architecture
+
+    Returns:
+        layout detection architecture
+    """
+    arch = "lw_detr_lite"
+    kwargs["class_names"] = kwargs.get("class_names", default_cfgs[arch].get("class_names", []))
+    _cfg = deepcopy(default_cfgs[arch])
+    _cfg["class_names"] = sorted(kwargs.pop("class_names"))
+
+    d_model = kwargs.pop("d_model", 64)
+    for key, value in {"dec_layers": 2, "sa_num_heads": 4, "ca_num_heads": 4, "ff_dim": 256}.items():
+        kwargs.setdefault(key, value)
+
+    encoder = LiteNetEncoder(litenet_tiny(pretrained=False, include_top=False))
+    feat_extractor = LWDETRBackbone(encoder_fn=encoder, out_channels=d_model, num_blocks=1)
+    model = LWDETR(feat_extractor, cfg=_cfg, class_names=_cfg["class_names"], d_model=d_model, **kwargs)
+    # Load pretrained parameters
+    if pretrained:
+        group_detr = kwargs.get("group_detr", 13)
+        # The number of class_names is not the same as the number of classes in the pretrained model =>
+        # remove the layer weights
+        _ignore_keys = (
+            [
+                "class_embed.weight",
+                "class_embed.bias",
+                *[f"enc_out_class_embed.{i}.weight" for i in range(group_detr)],
+                *[f"enc_out_class_embed.{i}.bias" for i in range(group_detr)],
+            ]
+            if _cfg["class_names"] != sorted(default_cfgs[arch].get("class_names", []))
+            else None
+        )
+        model.from_pretrained(default_cfgs[arch]["url"], ignore_keys=_ignore_keys)
+
+    return model

@@ -28,6 +28,7 @@ from doctr.models.recognition.vitstr.pytorch import ViTSTRPostProcessor
         ["vitstr_base", (3, 32, 128)],
         ["parseq", (3, 32, 128)],
         ["viptr_tiny", (3, 32, 128)],
+        ["ctc_lite", (3, 32, 128)],
     ],
 )
 def test_recognition_models(arch_name, input_shape, train_mode, mock_vocab):
@@ -251,7 +252,8 @@ def test_recognition_predictor_resolve_ambiguous_overlaps(width, readings, resol
 
 
 @pytest.mark.parametrize(
-    "arch_name", ["crnn_mobilenet_v3_small", "sar_resnet31", "master", "vitstr_small", "parseq", "viptr_tiny"]
+    "arch_name",
+    ["crnn_mobilenet_v3_small", "sar_resnet31", "master", "vitstr_small", "parseq", "viptr_tiny", "ctc_lite"],
 )
 def test_recognition_models_confidence_aggregation(arch_name, mock_vocab):
     model = recognition.__dict__[arch_name](vocab=mock_vocab, pretrained_backbone=False, confidence_aggregation="max")
@@ -277,6 +279,7 @@ def test_recognition_models_confidence_aggregation(arch_name, mock_vocab):
         "vitstr_base",
         "parseq",
         "viptr_tiny",
+        "ctc_lite",
     ],
 )
 def test_recognition_zoo(arch_name, input_shape):

@@ -32,6 +32,7 @@ system_available_memory = int(psutil.virtual_memory().available / 1024**3)
         ["vitstr_small", (3, 32, 128)],  # testing one vitstr version is enough
         ["parseq", (3, 32, 128)],
         ["viptr_tiny", (3, 32, 128)],
+        ["ctc_lite", (3, 32, 128)],
     ],
 )
 # Coverage tracing slows the (pure Python) dynamo export down ~3x: its code paths are covered by the other tests

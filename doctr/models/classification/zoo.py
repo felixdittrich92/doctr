@@ -5,7 +5,7 @@
 
 from typing import Any
 
-from doctr.models.utils import _CompiledModule
+from doctr.models.utils import _CompiledModule, _reparameterize_if_needed
 
 from .. import classification
 from ..preprocessor import PreProcessor
@@ -36,9 +36,16 @@ ARCHS: list[str] = [
     "vit_det_m",
     "starnet_s3",
     "hgnetv2_b4",
+    "litenet_tiny",
+    "litenet_small",
 ]
 
-ORIENTATION_ARCHS: list[str] = ["mobilenet_v3_small_crop_orientation", "mobilenet_v3_small_page_orientation"]
+ORIENTATION_ARCHS: list[str] = [
+    "mobilenet_v3_small_crop_orientation",
+    "mobilenet_v3_small_page_orientation",
+    "litenet_crop_orientation",
+    "litenet_page_orientation",
+]
 
 
 def _orientation_predictor(
@@ -54,9 +61,11 @@ def _orientation_predictor(
 
         # Load directly classifier from backbone
         _model = classification.__dict__[arch](pretrained=pretrained)
+        # Fuse the reparameterizable layers (lightweight models) for inference
+        _model = _reparameterize_if_needed(_model)
     else:
         # Adding the type for torch compiled models to the allowed architectures
-        allowed_archs = [classification.MobileNetV3, _CompiledModule]
+        allowed_archs = [classification.MobileNetV3, classification.LiteNet, _CompiledModule]
 
         if not isinstance(arch, tuple(allowed_archs)):
             raise ValueError(f"unknown architecture: {type(arch)}")

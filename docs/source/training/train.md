@@ -212,6 +212,27 @@ python references/classification/train_orientation.py mobilenet_v3_small_page_or
 
 [Full guide](https://github.com/mindee/doctr/tree/main/references/classification#readme).
 
+### Lightweight architectures
+
+Each task has an ultra-lightweight architecture built for fast CPU inference: a shared LiteNet backbone of
+depthwise-separable, reparameterizable convolutions (ReLU only, quantization-friendly), with the same inputs, training
+targets, losses and post-processing as the other architectures of the task. They have no pretrained weights yet: train
+them with the scripts above, e.g. `python references/layout/train.py lw_detr_lite ...`.
+
+| Task | Architecture | Based on |
+| --- | --- | --- |
+| Text detection | `fast_lite` | FAST |
+| Text recognition | `ctc_lite` | CRNN, with convolutional sequence mixing instead of the LSTM |
+| Layout analysis | `lw_detr_lite` | LW-DETR |
+| Table structure | `tablecenternet_lite` | TableCenterNet, with separable instead of deformable convolutions |
+| Formula recognition | `formulanet_lite` | FormulaNet, with a fixed sinusoidal encoding of the token positions |
+| Page orientation | `litenet_page_orientation` | LiteNet |
+| Crop orientation | `litenet_crop_orientation` | LiteNet |
+
+Fuse the training branches of the convolutions before inference or export with
+`doctr.models.reparameterize(model)`: the predictors (e.g. `ocr_predictor(det_arch="fast_lite", ...)`) do it
+when they build a lightweight model from its name.
+
 ## Hardware
 
 ::::{tab-set}

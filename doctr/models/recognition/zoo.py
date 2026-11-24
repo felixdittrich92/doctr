@@ -6,7 +6,7 @@
 from typing import Any
 
 from doctr.models.preprocessor import PreProcessor
-from doctr.models.utils import _CompiledModule
+from doctr.models.utils import _CompiledModule, _reparameterize_if_needed
 
 from .. import recognition
 from .._utils import ConfidenceAggregation, _resolve_confidence_aggregation
@@ -25,6 +25,7 @@ ARCHS: list[str] = [
     "vitstr_base",
     "parseq",
     "viptr_tiny",
+    "ctc_lite",
 ]
 
 
@@ -44,6 +45,8 @@ def _predictor(
         _model = recognition.__dict__[arch](
             pretrained=pretrained, pretrained_backbone=kwargs.get("pretrained_backbone", True)
         )
+        # Fuse the reparameterizable layers (lightweight models) for inference
+        _model = _reparameterize_if_needed(_model)
     else:
         # Adding the type for torch compiled models to the allowed architectures
         allowed_archs = [

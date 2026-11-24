@@ -8,4 +8,5 @@ from .starnet import *
 from .vip import *
 from .vit_det import *
 from .hgnetv2 import *
+from .litenet import *
 from .zoo import *

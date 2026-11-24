@@ -675,15 +675,14 @@ class MultiScaleProjector(nn.Module):
         self.stages = nn.ModuleList()
 
         sampling_layers = nn.ModuleList()
-        out_dim: int = 0
 
-        for in_dim in in_channels:
-            layers, out_dim = [nn.Identity()], in_dim
-            sampling_layers.append(nn.Sequential(*layers))
+        for _ in in_channels:
+            sampling_layers.append(nn.Sequential(nn.Identity()))
 
         self.stages_sampling.append(sampling_layers)
 
-        fusion_in_dim = out_dim * len(in_channels)
+        # The maps are concatenated along the channels (they may have different numbers of channels)
+        fusion_in_dim = sum(in_channels)
 
         self.stages.append(
             nn.Sequential(

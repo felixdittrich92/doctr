@@ -25,6 +25,7 @@ from doctr.models.detection.predictor import DetectionPredictor
         ["fast_tiny_rep", (3, 512, 512), (1, 512, 512), True],  # Reparameterized model
         ["fast_small", (3, 512, 512), (1, 512, 512), True],
         ["fast_base", (3, 512, 512), (1, 512, 512), True],
+        ["fast_lite", (3, 512, 512), (1, 512, 512), True],
     ],
 )
 def test_detection_models(arch_name, input_shape, output_size, out_prob, train_mode):
@@ -90,6 +91,7 @@ def test_detection_models(arch_name, input_shape, output_size, out_prob, train_m
         "db_mobilenet_v3_large",
         "linknet_resnet18",
         "fast_tiny",
+        "fast_lite",
     ],
 )
 def test_detection_zoo(arch_name):
@@ -142,7 +144,7 @@ def test_dilate():
     assert torch.equal(out, expected)
 
 
-@pytest.mark.parametrize("arch_name", ["db_mobilenet_v3_large", "fast_tiny", "linknet_resnet18"])
+@pytest.mark.parametrize("arch_name", ["db_mobilenet_v3_large", "fast_tiny", "fast_lite", "linknet_resnet18"])
 @pytest.mark.parametrize("mask_empty_classes", [False, True])
 def test_detection_multiclass_empty_class_target(arch_name, mask_empty_classes):
     class_names = ["cuenta", "fecha", "valor"]

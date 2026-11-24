@@ -5,7 +5,7 @@
 
 from typing import Any
 
-from doctr.models.utils import _CompiledModule
+from doctr.models.utils import _CompiledModule, _reparameterize_if_needed
 
 from .. import layout
 from ..preprocessor import PreProcessor
@@ -15,7 +15,7 @@ __all__ = ["layout_predictor"]
 
 ARCHS: list[str]
 
-ARCHS = ["lw_detr_s", "lw_detr_m"]
+ARCHS = ["lw_detr_s", "lw_detr_m", "lw_detr_lite"]
 
 
 def _predictor(arch: Any, pretrained: bool, assume_straight_pages: bool = True, **kwargs: Any) -> LayoutPredictor:
@@ -27,6 +27,8 @@ def _predictor(arch: Any, pretrained: bool, assume_straight_pages: bool = True, 
             pretrained=pretrained,
             assume_straight_pages=assume_straight_pages,
         )
+        # Fuse the reparameterizable layers (lightweight models) for inference
+        _model = _reparameterize_if_needed(_model)
     else:
         # Adding the type for torch compiled models to the allowed architectures
         allowed_archs = [layout.LWDETR, _CompiledModule]

@@ -27,9 +27,10 @@ _MOCK_FORMULA = r"J ( u , y ) = \int _ { 0 } ^ { 1 } \frac { | u | ^ { 2 } } { 2
 
 @pytest.mark.parametrize("train_mode", [True, False])
 @pytest.mark.parametrize("input_shape", [(3, 256, 768), (3, 128, 256)])
-def test_formula_models(input_shape, train_mode):
+@pytest.mark.parametrize("arch_name", ["formulanet", "formulanet_lite"])
+def test_formula_models(arch_name, input_shape, train_mode):
     batch_size = 2
-    model = formula.formulanet(pretrained=True, input_shape=input_shape)
+    model = formula.__dict__[arch_name](pretrained=True, input_shape=input_shape)
     model = model.train() if train_mode else model.eval()
     assert isinstance(model, FormulaNet)
     assert model.cfg["input_shape"] == input_shape
@@ -68,8 +69,11 @@ def test_formula_models(input_shape, train_mode):
         model(input_tensor)
 
 
-def test_formulanet_kv_cache_matches_full_decoding():
-    model = formula.formulanet(pretrained=True).eval()
+@pytest.mark.parametrize("arch_name", ["formulanet", "formulanet_lite"])
+def test_formulanet_kv_cache_matches_full_decoding(arch_name):
+    model = formula.__dict__[arch_name](pretrained=True).eval()
+    # The lightweight model encodes the token positions with a fixed sinusoidal encoding, without parameters
+    assert (model.pos_embed is None) == (arch_name == "formulanet_lite")
     with torch.no_grad():
         memory = model.encode(torch.rand((2, 3, 256, 768)))
         greedy = model.decode_greedy(memory, max_len=10)

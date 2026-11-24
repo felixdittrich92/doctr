@@ -27,6 +27,7 @@ from doctr.models.utils import _CompiledModule, export_model_to_onnx
         ["fast_small", (3, 512, 512), (1, 512, 512)],
         ["fast_base", (3, 512, 512), (1, 512, 512)],
         ["fast_tiny_rep", (3, 512, 512), (1, 512, 512)],  # Reparameterized model
+        ["fast_lite", (3, 512, 512), (1, 512, 512)],
     ],
 )
 # Coverage tracing slows the (pure Python) dynamo export down ~3x: its code paths are covered by the other tests

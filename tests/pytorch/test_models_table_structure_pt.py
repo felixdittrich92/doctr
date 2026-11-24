@@ -30,6 +30,7 @@ def _grid_target(rows=2, cols=3, use_polygons=True):
     "arch_name, input_shape",
     [
         ["tablecenternet", (3, 1024, 1024)],
+        ["tablecenternet_lite", (3, 1024, 1024)],
     ],
 )
 def test_table_models(arch_name, input_shape, train_mode, assume_straight_pages):
@@ -84,6 +85,7 @@ def test_table_models(arch_name, input_shape, train_mode, assume_straight_pages)
     "arch_name",
     [
         "tablecenternet",
+        "tablecenternet_lite",
     ],
 )
 def test_table_structure_zoo(arch_name, assume_straight_pages):

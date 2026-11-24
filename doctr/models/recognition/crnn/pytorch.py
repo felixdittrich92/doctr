@@ -219,6 +219,16 @@ class CRNN(RecognitionModel, nn.Module):
 
         return ctc_loss
 
+    def _compute_logits(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute the CTC logits of a batch of images, of shape (N, T, len(vocab) + 1)"""
+        features = self.feat_extractor(x)
+        # B x C x H x W --> B x C*H x W --> B x W x C*H
+        c, h, w = features.shape[1], features.shape[2], features.shape[3]
+        features_seq = torch.reshape(features, shape=(-1, h * c, w))
+        features_seq = torch.transpose(features_seq, 1, 2)
+        logits, _ = self.decoder(features_seq)
+        return self.linear(logits)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -229,13 +239,7 @@ class CRNN(RecognitionModel, nn.Module):
         if self.training and target is None:
             raise ValueError("Need to provide labels during training")
 
-        features = self.feat_extractor(x)
-        # B x C x H x W --> B x C*H x W --> B x W x C*H
-        c, h, w = features.shape[1], features.shape[2], features.shape[3]
-        features_seq = torch.reshape(features, shape=(-1, h * c, w))
-        features_seq = torch.transpose(features_seq, 1, 2)
-        logits, _ = self.decoder(features_seq)
-        logits = self.linear(logits)
+        logits = self._compute_logits(x)
 
         out: dict[str, Any] = {}
         if self.exportable:

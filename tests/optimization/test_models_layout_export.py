@@ -17,6 +17,7 @@ from doctr.models.utils import _CompiledModule, export_model_to_onnx
     [
         ["lw_detr_s", (3, 512, 512)],
         ["lw_detr_m", (3, 512, 512)],
+        ["lw_detr_lite", (3, 512, 512)],
     ],
 )
 # Coverage tracing slows the (pure Python) dynamo export down ~3x: its code paths are covered by the other tests

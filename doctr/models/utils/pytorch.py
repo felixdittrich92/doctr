@@ -22,9 +22,11 @@ __all__ = [
     "set_device_and_dtype",
     "export_model_to_onnx",
     "add_whitelist",
+    "reparameterize",
     "_copy_tensor",
     "_bf16_to_float32",
     "_CompiledModule",
+    "_reparameterize_if_needed",
 ]
 
 logger = logging.getLogger(__name__)
@@ -88,6 +90,62 @@ def load_pretrained_params(
     else:
         # Load weights
         model.load_state_dict(state_dict)
+
+
+def reparameterize(model: nn.Module) -> Any:
+    """Fuse batchnorm and conv layers and reparameterize the model (for inference only): the multi-branch layers
+    (e.g. of FAST and of the lightweight models) are fused into single convolutions
+
+    Args:
+        model: the model to reparameterize
+
+    Returns:
+        the reparameterized model
+    """
+    last_conv = None
+    last_conv_name = None
+
+    for module in model.modules():
+        if hasattr(module, "reparameterize_layer"):
+            module.reparameterize_layer()  # type: ignore[operator]
+
+    for name, child in model.named_children():
+        if isinstance(child, nn.BatchNorm2d):
+            # fuse batchnorm only if it is followed by a conv layer
+            if last_conv is None:
+                continue
+            conv_w = last_conv.weight
+            conv_b = last_conv.bias if last_conv.bias is not None else torch.zeros_like(child.running_mean)  # type: ignore[arg-type]
+
+            factor = child.weight / torch.sqrt(child.running_var + child.eps)  # type: ignore
+            last_conv.weight = nn.Parameter(conv_w * factor.reshape([last_conv.out_channels, 1, 1, 1]))
+            last_conv.bias = nn.Parameter((conv_b - child.running_mean) * factor + child.bias)  # type: ignore[operator]
+            model._modules[last_conv_name] = last_conv  # type: ignore[index]
+            model._modules[name] = nn.Identity()
+            last_conv = None
+        elif isinstance(child, nn.Conv2d):
+            last_conv = child
+            last_conv_name = name
+        else:
+            reparameterize(child)
+
+    return model
+
+
+def _reparameterize_if_needed(model: Any) -> Any:
+    """Reparameterize a model built with reparameterizable layers (e.g. the lightweight models), for inference
+
+    Args:
+        model: the model
+
+    Returns:
+        the reparameterized model, or the model itself if it has no reparameterizable layer
+    """
+    from doctr.models.modules.layers import RepConvLayer
+
+    if any(isinstance(module, RepConvLayer) for module in model.modules()):
+        return reparameterize(model)
+    return model
 
 
 def conv_sequence_pt(
@@ -278,6 +336,7 @@ def _strip_onnx_node_metadata(path: str) -> None:
 # Location of the final vocabulary-projection layer for each recognition architecture.
 _RECOGNITION_PROJECTIONS: dict[str, str] = {
     "CRNN": "linear",
+    "CTCLite": "linear",
     "SAR": "decoder.output_dense",
     "MASTER": "linear",
     "ViTSTR": "head",

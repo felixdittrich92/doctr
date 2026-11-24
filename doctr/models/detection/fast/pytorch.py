@@ -14,12 +14,12 @@ from torchvision.models._utils import IntermediateLayerGetter
 
 from doctr.file_utils import CLASS_NAME
 
-from ...classification import textnet_base, textnet_small, textnet_tiny
-from ...modules.layers import FASTConvLayer
-from ...utils import _bf16_to_float32, load_pretrained_params
+from ...classification import litenet_tiny, textnet_base, textnet_small, textnet_tiny
+from ...modules.layers import FASTConvLayer, RepConvLayer
+from ...utils import _bf16_to_float32, load_pretrained_params, reparameterize
 from .base import _FAST, FASTPostProcessor
 
-__all__ = ["FAST", "fast_tiny", "fast_small", "fast_base", "reparameterize"]
+__all__ = ["FAST", "FASTLite", "fast_tiny", "fast_small", "fast_base", "fast_lite", "reparameterize"]
 
 
 default_cfgs: dict[str, dict[str, Any]] = {
@@ -40,6 +40,12 @@ default_cfgs: dict[str, dict[str, Any]] = {
         "mean": (0.798, 0.785, 0.772),
         "std": (0.264, 0.2749, 0.287),
         "url": "https://doctr-static.mindee.com/models?id=v0.8.1/fast_base-688a8b34.pt&src=0",
+    },
+    "fast_lite": {
+        "input_shape": (3, 1024, 1024),
+        "mean": (0.798, 0.785, 0.772),
+        "std": (0.264, 0.2749, 0.287),
+        "url": None,
     },
 }
 
@@ -98,6 +104,49 @@ class FastHead(nn.Sequential):
         super().__init__(*_layers)
 
 
+class LiteFastNeck(nn.Module):
+    """Lightweight neck of FAST: the feature maps are projected to the same (small) number of channels with pointwise
+    convolutions, upsampled to stride 4 and summed (instead of concatenated), then smoothed by a depthwise-separable
+    convolution. Every convolution is reparameterizable.
+
+    Args:
+        in_channels: number of channels of each input feature map
+        out_channels: number of output channels
+    """
+
+    def __init__(self, in_channels: list[int], out_channels: int = 32) -> None:
+        super().__init__()
+        self.lateral = nn.ModuleList([RepConvLayer(c, out_channels, kernel_size=1) for c in in_channels])
+        self.smooth = nn.Sequential(
+            RepConvLayer(out_channels, out_channels, kernel_size=3, groups=out_channels),
+            RepConvLayer(out_channels, out_channels, kernel_size=1),
+        )
+
+    def forward(self, x: list[torch.Tensor]) -> torch.Tensor:
+        feats = [lateral(f) for lateral, f in zip(self.lateral, x)]
+        out = feats[0]
+        for f in feats[1:]:
+            out = out + F.interpolate(f, size=out.shape[-2:], mode="bilinear")
+        return self.smooth(out)
+
+
+class LiteFastHead(nn.Sequential):
+    """Lightweight head of FAST: a reparameterizable depthwise convolution and a pointwise classifier
+
+    Args:
+        in_channels: number of input channels
+        num_classes: number of output classes
+        dropout: dropout probability
+    """
+
+    def __init__(self, in_channels: int, num_classes: int, dropout: float = 0.1) -> None:
+        super().__init__(
+            RepConvLayer(in_channels, in_channels, kernel_size=3, groups=in_channels),
+            nn.Dropout(dropout),
+            nn.Conv2d(in_channels, num_classes, kernel_size=1, bias=False),
+        )
+
+
 class FAST(_FAST, nn.Module):
     """FAST as described in `"FAST: Faster Arbitrarily-Shaped Text Detector with Minimalist Kernel Representation"
     <https://arxiv.org/pdf/2111.02394.pdf>`_.
@@ -150,8 +199,7 @@ class FAST(_FAST, nn.Module):
             self.feat_extractor = self.feat_extractor.train()
 
         # Initialize neck & head
-        self.neck = FastNeck(feat_out_channels[0], feat_out_channels[1])
-        self.prob_head = FastHead(feat_out_channels[-1], num_classes, feat_out_channels[1], dropout_prob)
+        self.neck, self.prob_head = self._build_neck_and_head(feat_out_channels, num_classes, dropout_prob)
 
         # NOTE: The post processing from the paper works not well for text-rich images
         # so we use a modified version from DBNet
@@ -173,6 +221,24 @@ class FAST(_FAST, nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1.0)
                 m.bias.data.zero_()
+
+    @staticmethod
+    def _build_neck_and_head(
+        feat_out_channels: list[int], num_classes: int, dropout_prob: float
+    ) -> tuple[nn.Module, nn.Module]:
+        """Build the neck (fusing the backbone feature maps at stride 4) and the head (predicting the logits)
+
+        Args:
+            feat_out_channels: number of channels of each backbone feature map
+            num_classes: number of output classes
+            dropout_prob: dropout probability of the head
+
+        Returns:
+            the neck and the head
+        """
+        neck = FastNeck(feat_out_channels[0], feat_out_channels[1])
+        head = FastHead(feat_out_channels[-1], num_classes, feat_out_channels[1], dropout_prob)
+        return neck, head
 
     def from_pretrained(self, path_or_url: str, **kwargs: Any) -> None:
         """Load pretrained parameters onto the model
@@ -302,43 +368,28 @@ class FAST(_FAST, nn.Module):
         return text_loss + kernel_loss
 
 
-def reparameterize(model: FAST | nn.Module) -> FAST:
-    """Fuse batchnorm and conv layers and reparameterize the model
+class FASTLite(FAST):
+    """Ultra-lightweight FAST for fast CPU inference: a LiteNet backbone, and a neck & head made of (reparameterizable)
+    pointwise and depthwise convolutions on a few channels (cf. `LiteFastNeck` and `LiteFastHead`), instead of
+    3x3 convolutions on the concatenation of all the feature maps. Same training targets, loss and post-processing
+    as FAST.
 
     Args:
-        model: the FAST model to reparameterize
-
-    Returns:
-        the reparameterized model
+        feat_extractor: the backbone serving as feature extractor
+        neck_channels: number of channels of the neck and the head
+        **kwargs: keyword arguments of FAST
     """
-    last_conv = None
-    last_conv_name = None
 
-    for module in model.modules():
-        if hasattr(module, "reparameterize_layer"):
-            module.reparameterize_layer()  # type: ignore[operator]
+    def __init__(self, feat_extractor: IntermediateLayerGetter, neck_channels: int = 32, **kwargs: Any) -> None:
+        self._neck_channels = neck_channels
+        super().__init__(feat_extractor, **kwargs)
 
-    for name, child in model.named_children():
-        if isinstance(child, nn.BatchNorm2d):
-            # fuse batchnorm only if it is followed by a conv layer
-            if last_conv is None:
-                continue
-            conv_w = last_conv.weight
-            conv_b = last_conv.bias if last_conv.bias is not None else torch.zeros_like(child.running_mean)  # type: ignore[arg-type]
-
-            factor = child.weight / torch.sqrt(child.running_var + child.eps)  # type: ignore
-            last_conv.weight = nn.Parameter(conv_w * factor.reshape([last_conv.out_channels, 1, 1, 1]))
-            last_conv.bias = nn.Parameter((conv_b - child.running_mean) * factor + child.bias)  # type: ignore[operator]
-            model._modules[last_conv_name] = last_conv  # type: ignore[index]
-            model._modules[name] = nn.Identity()
-            last_conv = None
-        elif isinstance(child, nn.Conv2d):
-            last_conv = child
-            last_conv_name = name
-        else:
-            reparameterize(child)
-
-    return model  # type: ignore[return-value]
+    def _build_neck_and_head(  # type: ignore[override]
+        self, feat_out_channels: list[int], num_classes: int, dropout_prob: float
+    ) -> tuple[nn.Module, nn.Module]:
+        neck = LiteFastNeck(feat_out_channels, self._neck_channels)
+        head = LiteFastHead(self._neck_channels, num_classes, dropout_prob)
+        return neck, head
 
 
 def _fast(
@@ -348,6 +399,7 @@ def _fast(
     feat_layers: list[str],
     pretrained_backbone: bool = True,
     ignore_keys: list[str] | None = None,
+    model_cls: type[FAST] = FAST,
     **kwargs: Any,
 ) -> FAST:
     pretrained_backbone = pretrained_backbone and not pretrained
@@ -363,7 +415,7 @@ def _fast(
     else:
         kwargs["class_names"] = sorted(kwargs["class_names"])
     # Build the model
-    model = FAST(feat_extractor, cfg=default_cfgs[arch], **kwargs)
+    model = model_cls(feat_extractor, cfg=default_cfgs[arch], **kwargs)
     # Load pretrained parameters
     if pretrained:
         # The number of class_names is not the same as the number of classes in the pretrained model =>
@@ -453,5 +505,34 @@ def fast_base(pretrained: bool = False, **kwargs: Any) -> FAST:
         textnet_base,
         ["3", "4", "5", "6"],
         ignore_keys=["prob_head.2.weight"],
+        **kwargs,
+    )
+
+
+def fast_lite(pretrained: bool = False, **kwargs: Any) -> FASTLite:
+    """Ultra-lightweight FAST for fast CPU inference, using a LiteNet-Tiny backbone and a depthwise-separable neck &
+    head (cf. `FASTLite`), based on `"FAST: Faster Arbitrarily-Shaped Text Detector with Minimalist Kernel
+    Representation" <https://arxiv.org/pdf/2111.02394.pdf>`_.
+
+    >>> import torch
+    >>> from doctr.models import fast_lite
+    >>> model = fast_lite(pretrained=False)
+    >>> input_tensor = torch.rand((1, 3, 1024, 1024), dtype=torch.float32)
+    >>> out = model(input_tensor)
+
+    Args:
+        pretrained: If True, returns a model pre-trained on our text detection dataset
+        **kwargs: keyword arguments of the FASTLite architecture
+
+    Returns:
+        text detection architecture
+    """
+    return _fast(  # type: ignore[return-value]
+        "fast_lite",
+        pretrained,
+        litenet_tiny,
+        ["1", "2", "3", "4"],
+        ignore_keys=["prob_head.2.weight"],
+        model_cls=FASTLite,
         **kwargs,
     )

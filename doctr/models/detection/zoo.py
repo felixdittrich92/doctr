@@ -26,6 +26,7 @@ ARCHS = [
     "fast_tiny",
     "fast_small",
     "fast_base",
+    "fast_lite",
 ]
 
 

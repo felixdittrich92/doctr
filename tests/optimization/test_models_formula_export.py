@@ -20,6 +20,7 @@ from doctr.models.utils import _CompiledModule, export_model_to_onnx
     "arch_name, input_shape",
     [
         ["formulanet", (3, 256, 768)],
+        ["formulanet_lite", (3, 256, 768)],
     ],
 )
 # Coverage tracing slows the (pure Python) dynamo export down ~3x: its code paths are covered by the other tests

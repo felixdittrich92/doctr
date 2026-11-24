@@ -13,6 +13,7 @@ from doctr.models.layout.predictor import LayoutPredictor
     [
         ["lw_detr_s", (3, 512, 512)],
         ["lw_detr_m", (3, 1024, 1024)],
+        ["lw_detr_lite", (3, 1024, 1024)],
     ],
 )
 def test_layout_models(arch_name, input_shape, train_mode, use_polygons):
@@ -87,6 +88,7 @@ def test_layout_models(arch_name, input_shape, train_mode, use_polygons):
     [
         "lw_detr_s",
         "lw_detr_m",
+        "lw_detr_lite",
     ],
 )
 def test_layout_zoo(arch_name):

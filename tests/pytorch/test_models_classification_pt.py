@@ -48,6 +48,8 @@ def _test_classification(model, input_shape, output_size, batch_size=2):
         ["vit_det_m", (3, 32, 32), (126,)],
         ["starnet_s3", (3, 32, 32), (126,)],
         ["hgnetv2_b4", (3, 32, 32), (126,)],
+        ["litenet_tiny", (3, 32, 32), (126,)],
+        ["litenet_small", (3, 32, 32), (126,)],
     ],
 )
 def test_classification_architectures(arch_name, input_shape, output_size):
@@ -68,6 +70,8 @@ def test_classification_architectures(arch_name, input_shape, output_size):
     [
         ["mobilenet_v3_small_crop_orientation", (3, 256, 256)],
         ["mobilenet_v3_small_page_orientation", (3, 512, 512)],
+        ["litenet_crop_orientation", (3, 256, 256)],
+        ["litenet_page_orientation", (3, 512, 512)],
     ],
 )
 def test_classification_models(arch_name, input_shape):
@@ -89,6 +93,8 @@ def test_classification_models(arch_name, input_shape):
     [
         "mobilenet_v3_small_crop_orientation",
         "mobilenet_v3_small_page_orientation",
+        "litenet_crop_orientation",
+        "litenet_page_orientation",
     ],
 )
 def test_classification_zoo(arch_name):

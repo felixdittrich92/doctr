@@ -47,6 +47,8 @@ directly. See the [model zoo](../models/index.md) for benchmarks.
 .. autofunction:: doctr.models.detection.fast_small
 
 .. autofunction:: doctr.models.detection.fast_base
+
+.. autofunction:: doctr.models.detection.fast_lite
 ```
 
 ## Text recognition
@@ -71,6 +73,8 @@ directly. See the [model zoo](../models/index.md) for benchmarks.
 .. autofunction:: doctr.models.recognition.parseq
 
 .. autofunction:: doctr.models.recognition.viptr_tiny
+
+.. autofunction:: doctr.models.recognition.ctc_lite
 ```
 
 ## Layout analysis
@@ -81,6 +85,8 @@ directly. See the [model zoo](../models/index.md) for benchmarks.
 .. autofunction:: doctr.models.layout.lw_detr_s
 
 .. autofunction:: doctr.models.layout.lw_detr_m
+
+.. autofunction:: doctr.models.layout.lw_detr_lite
 ```
 
 ## Table structure recognition
@@ -92,6 +98,8 @@ directly. See the [model zoo](../models/index.md) for benchmarks.
    :members: predict_regions
 
 .. autofunction:: doctr.models.table_structure.tablecenternet
+
+.. autofunction:: doctr.models.table_structure.tablecenternet_lite
 ```
 
 ## Formula recognition
@@ -103,6 +111,8 @@ directly. See the [model zoo](../models/index.md) for benchmarks.
    :members: predict_regions
 
 .. autofunction:: doctr.models.formula.formulanet
+
+.. autofunction:: doctr.models.formula.formulanet_lite
 ```
 
 ## Classification
@@ -117,6 +127,10 @@ Orientation classifiers, and the backbones used by the detection and recognition
 .. autofunction:: doctr.models.classification.mobilenet_v3_small_crop_orientation
 
 .. autofunction:: doctr.models.classification.mobilenet_v3_small_page_orientation
+
+.. autofunction:: doctr.models.classification.litenet_crop_orientation
+
+.. autofunction:: doctr.models.classification.litenet_page_orientation
 
 .. autofunction:: doctr.models.classification.vgg16_bn_r
 
@@ -159,6 +173,10 @@ Orientation classifiers, and the backbones used by the detection and recognition
 .. autofunction:: doctr.models.classification.starnet_s3
 
 .. autofunction:: doctr.models.classification.hgnetv2_b4
+
+.. autofunction:: doctr.models.classification.litenet_tiny
+
+.. autofunction:: doctr.models.classification.litenet_small
 ```
 
 ## Hugging Face Hub

@@ -14,12 +14,12 @@ from torch import nn
 from torch.nn import functional as F
 from torchvision.models._utils import IntermediateLayerGetter
 
-from ....models.classification import starnet_s3
-from ...modules.layers.pytorch import DCNv2
+from ....models.classification import litenet_small, starnet_s3
+from ...modules.layers.pytorch import DCNv2, RepConvLayer
 from ...utils import _bf16_to_float32, load_pretrained_params
 from .base import TableCenterNetPostProcessor, _TableCenterNet
 
-__all__ = ["TableCenterNet", "tablecenternet"]
+__all__ = ["TableCenterNet", "tablecenternet", "tablecenternet_lite"]
 
 default_cfgs: dict[str, dict[str, Any]] = {
     "tablecenternet": {
@@ -27,6 +27,12 @@ default_cfgs: dict[str, dict[str, Any]] = {
         "mean": (0.798, 0.785, 0.772),
         "std": (0.264, 0.2749, 0.287),
         "url": "https://github.com/mindee/doctr/releases/download/v1.1.0/tablecenternet-b0d6f603.pt",
+    },
+    "tablecenternet_lite": {
+        "input_shape": (3, 1024, 1024),
+        "mean": (0.798, 0.785, 0.772),
+        "std": (0.264, 0.2749, 0.287),
+        "url": None,
     },
 }
 
@@ -67,6 +73,20 @@ class DeformConv(nn.Module):
         return self.actf(self.conv(x))
 
 
+class SeparableConv(nn.Sequential):
+    """Depthwise-separable replacement of `DeformConv` for the lightweight TableCenterNet: a pointwise and a depthwise
+    3x3 reparameterizable convolution, each followed by a ReLU (plain convolutions, fast on CPUs and exportable to ONNX
+    without custom operators).
+
+    Args:
+        chi: number of input channels
+        cho: number of output channels
+    """
+
+    def __init__(self, chi: int, cho: int):
+        super().__init__(RepConvLayer(chi, cho, kernel_size=1), RepConvLayer(cho, cho, kernel_size=3, groups=cho))
+
+
 class IDAUp(nn.Module):
     """Iterative Deep Aggregation for Upsampling, as described in `<https://arxiv.org/abs/1707.06484>`_.
 
@@ -74,14 +94,17 @@ class IDAUp(nn.Module):
         o: number of output channels
         channels: list of number of channels for each input feature map
         up_f: list of upsampling factors for each input feature map
+        conv_fn: the convolution block, taking the numbers of input and output channels
     """
 
-    def __init__(self, o: int, channels: list[int], up_f: list[int]):
+    def __init__(
+        self, o: int, channels: list[int], up_f: list[int], conv_fn: Callable[[int, int], nn.Module] = DeformConv
+    ):
         super().__init__()
         for i in range(1, len(channels)):
             c, f = channels[i], int(up_f[i])
-            setattr(self, "proj_" + str(i), DeformConv(c, o))
-            setattr(self, "node_" + str(i), DeformConv(o, o))
+            setattr(self, "proj_" + str(i), conv_fn(c, o))
+            setattr(self, "node_" + str(i), conv_fn(o, o))
             up = nn.ConvTranspose2d(o, o, f * 2, stride=f, padding=f // 2, output_padding=0, groups=o, bias=False)
             setattr(self, "up_" + str(i), up)
 
@@ -102,9 +125,17 @@ class DLAUp(nn.Module):
         channels: list of number of channels for each input feature map
         scales: list of upsampling factors for each input feature map
         in_channels: list of number of input channels for each input feature map (optional)
+        conv_fn: the convolution block, taking the numbers of input and output channels
     """
 
-    def __init__(self, startp: int, channels: list[int], scales: list[int], in_channels: list[int] | None = None):
+    def __init__(
+        self,
+        startp: int,
+        channels: list[int],
+        scales: list[int],
+        in_channels: list[int] | None = None,
+        conv_fn: Callable[[int, int], nn.Module] = DeformConv,
+    ):
         super().__init__()
         self.startp = startp
         if in_channels is None:
@@ -114,7 +145,11 @@ class DLAUp(nn.Module):
         np_scales = np.array(scales, dtype=int)
         for i in range(len(channels) - 1):
             j = -i - 2
-            setattr(self, f"ida_{i}", IDAUp(channels[j], in_channels[j:], (np_scales[j:] // np_scales[j]).tolist()))
+            setattr(
+                self,
+                f"ida_{i}",
+                IDAUp(channels[j], in_channels[j:], (np_scales[j:] // np_scales[j]).tolist(), conv_fn=conv_fn),
+            )
             np_scales[j + 1 :] = np_scales[j]
             in_channels[j + 1 :] = [channels[j] for _ in channels[j + 1 :]]
 
@@ -150,6 +185,11 @@ class TableCenterNet(nn.Module, _TableCenterNet):
         corner_k: maximum number of corners
         not_relocate: if True, skip the corner-relocation step
         geometric_logic: if True, remove the duplicate cells (cf. `TableCenterNetPostProcessor`)
+        separable: if True, use depthwise-separable convolutions (`SeparableConv`) instead of deformable ones in the
+            decoder, and in the heads (lightweight model for fast CPU inference)
+        shared_head: if True, the heads share their hidden layer (`head_conv` channels, computed once) and each one is
+            a pointwise classifier on top of it, instead of having its own hidden layer: the capacity of wide heads for
+            the cost of one (lightweight model for fast CPU inference)
         assume_straight_pages: if True, the predictor will fit straight boxes to the cells
         exportable: onnx exportable returns only the raw head maps
         cfg: the configuration dict of the model
@@ -170,6 +210,8 @@ class TableCenterNet(nn.Module, _TableCenterNet):
         geometric_logic: bool = True,
         max_objects: int = 3000,
         max_corners: int = 12000,
+        separable: bool = False,
+        shared_head: bool = False,
         assume_straight_pages: bool = True,
         exportable: bool = False,
         cfg: dict[str, Any] | None = None,
@@ -193,20 +235,30 @@ class TableCenterNet(nn.Module, _TableCenterNet):
         if _is_training:
             self.feat_extractor = self.feat_extractor.train()
 
+        conv_fn: Callable[[int, int], nn.Module] = SeparableConv if separable else DeformConv
         scales = [2**i for i in range(len(channels[first_level:]))]
-        self.dla_up = DLAUp(first_level, channels[first_level:], scales)
+        self.dla_up = DLAUp(first_level, channels[first_level:], scales, conv_fn=conv_fn)
         out_channel = channels[first_level]
         self.ida_up = IDAUp(
-            out_channel, channels[first_level:last_level], [2**i for i in range(last_level - first_level)]
+            out_channel,
+            channels[first_level:last_level],
+            [2**i for i in range(last_level - first_level)],
+            conv_fn=conv_fn,
         )
+
+        def _hidden_layers() -> list[nn.Module]:
+            # (hidden layer, activation): the module indices of the heads of the released checkpoints
+            if separable:
+                # SeparableConv ends with a ReLU
+                return [SeparableConv(channels[first_level], head_conv), nn.Identity()]
+            return [nn.Conv2d(channels[first_level], head_conv, 3, padding=1, bias=True), nn.ReLU(inplace=True)]
+
+        self.head_trunk: nn.Module | None = nn.Sequential(*_hidden_layers()) if shared_head else None
         for head, out_ch in self.heads.items():
-            fc = nn.Sequential(
-                nn.Conv2d(channels[first_level], head_conv, 3, padding=1, bias=True),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(head_conv, out_ch, 1, stride=1, padding=0, bias=True),
-            )
+            classifier = nn.Conv2d(head_conv, out_ch, 1, stride=1, padding=0, bias=True)
+            fc = nn.Sequential(classifier) if shared_head else nn.Sequential(*_hidden_layers(), classifier)
             # Reference head initialisation: detection-style bias for heatmaps, zeroed bias otherwise
-            final = fc[2]
+            final = fc[-1]
             if isinstance(final, nn.Conv2d) and final.bias is not None:
                 nn.init.constant_(final.bias, -2.19 if "hm" in head else 0.0)
             self.__setattr__(head, fc)
@@ -274,7 +326,8 @@ class TableCenterNet(nn.Module, _TableCenterNet):
         layers = self.dla_up(feats)
         y = [layers[i].clone() for i in range(self.last_level - self.first_level)]
         self.ida_up(y, 0, len(y))
-        return {head: self.__getattr__(head)(y[-1]) for head in self.heads}  # type: ignore[operator]
+        out = y[-1] if self.head_trunk is None else self.head_trunk(y[-1])
+        return {head: self.__getattr__(head)(out) for head in self.heads}  # type: ignore[operator]
 
     @torch.compiler.disable
     def _decode(self, heads: dict[str, torch.Tensor]) -> dict[str, Any]:
@@ -523,3 +576,24 @@ def tablecenternet(pretrained: bool = False, **kwargs: Any) -> TableCenterNet:
         A TableCenterNet model with a StarNet-S3 backbone
     """
     return _tablecenternet("tablecenternet", pretrained, starnet_s3, **kwargs)
+
+
+def tablecenternet_lite(pretrained: bool = False, **kwargs: Any) -> TableCenterNet:
+    """Ultra-lightweight TableCenterNet for fast CPU inference: a LiteNet-Small backbone, depthwise-separable
+    convolutions instead of deformable ones in the decoder and in the heads. Same inputs, training targets, loss and
+    post-processing as TableCenterNet.
+
+    >>> import torch
+    >>> from doctr.models import tablecenternet_lite
+    >>> model = tablecenternet_lite(pretrained=False)
+    >>> out = model(torch.rand((1, 3, 1024, 1024), dtype=torch.float32), return_preds=True)
+
+    Args:
+        pretrained: boolean, True if model is pretrained
+        **kwargs: keyword arguments of the TableCenterNet architecture
+
+    Returns:
+        A TableCenterNet model with a LiteNet-Small backbone
+    """
+    kwargs.setdefault("head_conv", 64)
+    return _tablecenternet("tablecenternet_lite", pretrained, litenet_small, separable=True, **kwargs)

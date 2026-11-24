@@ -5,7 +5,7 @@
 
 from typing import Any
 
-from doctr.models.utils import _CompiledModule
+from doctr.models.utils import _CompiledModule, _reparameterize_if_needed
 
 from .. import table_structure
 from ..preprocessor import PreProcessor
@@ -13,7 +13,7 @@ from .predictor import TablePredictor
 
 __all__ = ["table_predictor"]
 
-ARCHS: list[str] = ["tablecenternet"]
+ARCHS: list[str] = ["tablecenternet", "tablecenternet_lite"]
 
 
 def _predictor(arch: Any, pretrained: bool, assume_straight_pages: bool = False, **kwargs: Any) -> TablePredictor:
@@ -21,6 +21,8 @@ def _predictor(arch: Any, pretrained: bool, assume_straight_pages: bool = False,
         if arch not in ARCHS:
             raise ValueError(f"unknown architecture '{arch}'")
         _model = table_structure.__dict__[arch](pretrained=pretrained, assume_straight_pages=assume_straight_pages)
+        # Fuse the reparameterizable layers (lightweight models) for inference
+        _model = _reparameterize_if_needed(_model)
     else:
         allowed_archs = [table_structure.TableCenterNet, _CompiledModule]
         if not isinstance(arch, tuple(allowed_archs)):

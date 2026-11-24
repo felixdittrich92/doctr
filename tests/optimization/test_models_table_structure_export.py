@@ -16,6 +16,7 @@ from doctr.models.utils import _CompiledModule, export_model_to_onnx
     "arch_name, input_shape",
     [
         ["tablecenternet", (3, 1024, 1024)],
+        ["tablecenternet_lite", (3, 1024, 1024)],
     ],
 )
 # Coverage tracing slows the (pure Python) dynamo export down ~3x: its code paths are covered by the other tests

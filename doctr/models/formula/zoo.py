@@ -5,7 +5,7 @@
 
 from typing import Any
 
-from doctr.models.utils import _CompiledModule
+from doctr.models.utils import _CompiledModule, _reparameterize_if_needed
 
 from .. import formula
 from .._utils import ConfidenceAggregation, _resolve_confidence_aggregation
@@ -14,7 +14,7 @@ from .predictor import FormulaPredictor
 
 __all__ = ["formula_predictor"]
 
-ARCHS: list[str] = ["formulanet"]
+ARCHS: list[str] = ["formulanet", "formulanet_lite"]
 
 
 def _predictor(
@@ -33,6 +33,8 @@ def _predictor(
         _model = formula.__dict__[arch](
             pretrained=pretrained, pretrained_backbone=kwargs.get("pretrained_backbone", True)
         )
+        # Fuse the reparameterizable layers (lightweight models) for inference
+        _model = _reparameterize_if_needed(_model)
     else:
         # Adding the type for torch compiled models to the allowed architectures
         allowed_archs = [formula.FormulaNet, _CompiledModule]

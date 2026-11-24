@@ -3,12 +3,14 @@
 # This program is licensed under the Apache License 2.0.
 # See LICENSE or go to <https://opensource.org/licenses/Apache-2.0> for full license details.
 
+from typing import cast
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["FASTConvLayer", "DropPath", "AdaptiveAvgPool2d", "ChannelLayerNorm", "DCNv2"]
+__all__ = ["FASTConvLayer", "RepConvLayer", "DropPath", "AdaptiveAvgPool2d", "ChannelLayerNorm", "DCNv2"]
 
 
 class DropPath(nn.Module):
@@ -344,3 +346,103 @@ class FASTConvLayer(nn.Module):
 
         if hasattr(self, "rbr_identity"):
             self.__delattr__("rbr_identity")
+
+
+class RepConvLayer(nn.Module):
+    """Reparameterizable convolution, batch normalization and ReLU, as in `"MobileOne: An Improved One millisecond
+    Mobile Backbone" <https://arxiv.org/abs/2206.04861>`_.
+
+    During training, the layer sums the batch-normalized outputs of a KxK convolution, of a 1x1 convolution (if K > 1)
+    and of the identity (if the input and output shapes are the same). `reparameterize_layer` fuses these branches into
+    a single KxK convolution with a bias: the inference graph is a plain convolution followed by a ReLU, which is the
+    fastest (and the most quantization-friendly) operator on CPUs.
+
+    Args:
+        in_channels: number of input channels
+        out_channels: number of output channels
+        kernel_size: size of the convolution kernel (odd)
+        stride: stride of the convolution
+        groups: number of groups of the convolution (`in_channels` for a depthwise convolution)
+        activation: whether to apply a ReLU after the convolution
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        stride: int | tuple[int, int] = 1,
+        groups: int = 1,
+        activation: bool = True,
+    ) -> None:
+        super().__init__()
+        if kernel_size % 2 == 0:
+            raise ValueError("`kernel_size` must be odd")
+        self.in_channels, self.out_channels = in_channels, out_channels
+        self.kernel_size, self.groups = kernel_size, groups
+        self.stride: tuple[int, int] = (stride, stride) if isinstance(stride, int) else (stride[0], stride[1])
+        self.activation = nn.ReLU(inplace=True) if activation else nn.Identity()
+
+        self.conv = nn.Conv2d(
+            in_channels, out_channels, kernel_size, self.stride, kernel_size // 2, groups=groups, bias=False
+        )
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.conv_1x1: nn.Conv2d | None = None
+        self.bn_1x1: nn.BatchNorm2d | None = None
+        if kernel_size > 1:
+            self.conv_1x1 = nn.Conv2d(in_channels, out_channels, 1, self.stride, 0, groups=groups, bias=False)
+            self.bn_1x1 = nn.BatchNorm2d(out_channels)
+        self.bn_identity = (
+            nn.BatchNorm2d(in_channels) if in_channels == out_channels and self.stride == (1, 1) else None
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if hasattr(self, "fused_conv"):
+            return self.activation(self.fused_conv(x))
+        out = self.bn(self.conv(x))
+        if self.conv_1x1 is not None and self.bn_1x1 is not None:
+            out = out + self.bn_1x1(self.conv_1x1(x))
+        if self.bn_identity is not None:
+            out = out + self.bn_identity(x)
+        return self.activation(out)
+
+    @staticmethod
+    def _fuse_bn(kernel: torch.Tensor, bn: nn.BatchNorm2d) -> tuple[torch.Tensor, torch.Tensor]:
+        running_mean, running_var = cast(torch.Tensor, bn.running_mean), cast(torch.Tensor, bn.running_var)
+        scale = bn.weight / (running_var + bn.eps).sqrt()
+        return kernel * scale.reshape(-1, 1, 1, 1), bn.bias - running_mean * scale
+
+    def _equivalent_kernel_bias(self) -> tuple[torch.Tensor, torch.Tensor]:
+        kernel, bias = self._fuse_bn(self.conv.weight, self.bn)
+        pad = self.kernel_size // 2
+        if self.conv_1x1 is not None and self.bn_1x1 is not None:
+            k1, b1 = self._fuse_bn(F.pad(self.conv_1x1.weight, [pad, pad, pad, pad]), self.bn_1x1)
+            kernel, bias = kernel + k1, bias + b1
+        if self.bn_identity is not None:
+            input_dim = self.in_channels // self.groups
+            identity = torch.zeros_like(self.conv.weight)
+            idx = torch.arange(self.in_channels, device=identity.device)
+            identity[idx, idx % input_dim, pad, pad] = 1.0
+            kid, bid = self._fuse_bn(identity, self.bn_identity)
+            kernel, bias = kernel + kid, bias + bid
+        return kernel, bias
+
+    def reparameterize_layer(self) -> None:
+        """Fuse the branches into a single convolution with a bias (for inference only)"""
+        if hasattr(self, "fused_conv"):
+            return
+        kernel, bias = self._equivalent_kernel_bias()
+        self.fused_conv = nn.Conv2d(
+            self.in_channels,
+            self.out_channels,
+            self.kernel_size,
+            self.stride,
+            self.kernel_size // 2,
+            groups=self.groups,
+            bias=True,
+        ).to(kernel.device)
+        self.fused_conv.weight.data = kernel.detach()
+        self.fused_conv.bias.data = bias.detach()  # type: ignore[union-attr]
+        for attr in ["conv", "bn", "conv_1x1", "bn_1x1", "bn_identity"]:
+            if hasattr(self, attr):
+                self.__delattr__(attr)
